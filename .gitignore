@@ -1,0 +1,15 @@
+# build output
+dist/
+bin/
+obj/
+.tools/
+
+# runtime artifacts
+*.log
+*.png
+install-cycle.txt
+
+# visual studio / rider
+.vs/
+.idea/
+*.user

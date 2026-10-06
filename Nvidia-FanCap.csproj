@@ -1,0 +1,45 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <AssemblyName>Nvidia-FanCap-x64</AssemblyName>
+    <RootNamespace>NvidiaFanCap</RootNamespace>
+    <Product>Nvidia-FanCap</Product>
+    <AssemblyTitle>Nvidia-FanCap - NVIDIA GPU fan ceiling enforcer (64-bit)</AssemblyTitle>
+    <Version>1.0.0</Version>
+
+    <!-- explicit 64-bit build -->
+    <Platforms>x64</Platforms>
+    <PlatformTarget>x64</PlatformTarget>
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <SelfContained>false</SelfContained>
+
+    <Nullable>disable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <DebugType>none</DebugType>
+
+    <!-- NativeAOT: single native binary, no .NET runtime, tiny working set -->
+    <PublishAot>true</PublishAot>
+    <StripSymbols>true</StripSymbols>
+    <IlcOptimizationPreference>Size</IlcOptimizationPreference>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <None Include="Nvidia-FanCap.ini" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+  </ItemGroup>
+
+  <!-- gui\ is a separate WinUI 3 project, keep it out of this build -->
+  <ItemGroup>
+    <Compile Remove="gui\**" />
+    <None Remove="gui\**" />
+    <Content Remove="gui\**" />
+    <Page Remove="gui\**" />
+    <ApplicationDefinition Remove="gui\**" />
+    <UpToDateCheckInput Remove="gui\**" />
+    <UpToDateCheckOutput Remove="gui\**" />
+  </ItemGroup>
+
+</Project>

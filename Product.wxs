@@ -1,0 +1,65 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Nvidia-FanCap MSI package (WiX Toolset v4+).
+  Builds with: wix build -arch x64 Product.wxs -o dist\Nvidia-FanCap-<version>-x64.msi
+  - installs the single native exe + settings file to Program Files
+  - creates a Start Menu shortcut (opens the settings UI, no admin needed)
+  - registers/removes the hidden elevated logon task through the exe itself,
+    so every path is derived from the install location (fully generic)
+-->
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+  <Package Name="Nvidia-FanCap"
+           Manufacturer="Nvidia-FanCap"
+           Version="1.0.0"
+           UpgradeCode="6F2A9C7E-1D4B-4A83-9E5C-2B7F0A3D8C11"
+           Scope="perMachine"
+           Language="2052"
+           InstallerVersion="500">
+
+    <SummaryInformation Description="NVIDIA 显卡风扇上限强制控制（64 位）" />
+    <MajorUpgrade DowngradeErrorMessage="已安装更新版本的 Nvidia-FanCap，请先卸载旧版本。" />
+    <MediaTemplate EmbedCab="yes" CompressionLevel="high" />
+
+    <StandardDirectory Id="ProgramFiles64Folder">
+      <Directory Id="INSTALLFOLDER" Name="Nvidia-FanCap">
+        <Component Id="MainFiles">
+          <File Id="ExeFile" Source="dist\Nvidia-FanCap-x64.exe" KeyPath="yes" />
+          <File Id="IniFile" Source="dist\Nvidia-FanCap.ini" />
+        </Component>
+      </Directory>
+    </StandardDirectory>
+
+    <StandardDirectory Id="ProgramMenuFolder">
+      <Directory Id="AppStartMenuFolder" Name="Nvidia-FanCap">
+        <Component Id="StartMenuShortcut">
+          <Shortcut Id="SettingsShortcut"
+                    Name="Nvidia-FanCap 设置"
+                    Description="显卡风扇上限设置"
+                    Target="[INSTALLFOLDER]Nvidia-FanCap-x64.exe"
+                    WorkingDirectory="INSTALLFOLDER" />
+          <RemoveFolder Id="RemoveStartMenuFolder" On="uninstall" />
+          <RegistryValue Root="HKLM" Key="Software\Nvidia-FanCap" Name="StartMenu"
+                         Type="integer" Value="1" KeyPath="yes" />
+        </Component>
+      </Directory>
+    </StandardDirectory>
+
+    <Feature Id="ProductFeature" Level="1">
+      <ComponentRef Id="MainFiles" />
+      <ComponentRef Id="StartMenuShortcut" />
+    </Feature>
+
+    <!-- register/remove the elevated logon task through the installed exe;
+         run as the installing administrator (proven path), not as SYSTEM -->
+    <CustomAction Id="RegisterDaemon" FileRef="ExeFile" ExeCommand="--install"
+                  Execute="immediate" Impersonate="yes" Return="ignore" />
+    <CustomAction Id="UnregisterDaemon" FileRef="ExeFile" ExeCommand="--uninstall"
+                  Execute="immediate" Impersonate="yes" Return="ignore" />
+
+    <InstallExecuteSequence>
+      <Custom Action="RegisterDaemon" After="InstallFiles" Condition="NOT Installed" />
+      <Custom Action="UnregisterDaemon" Before="RemoveFiles" Condition="Installed AND (REMOVE=&quot;ALL&quot;)" />
+    </InstallExecuteSequence>
+
+  </Package>
+</Wix>
