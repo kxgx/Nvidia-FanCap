@@ -78,8 +78,17 @@ namespace NvidiaFanCap
                 logFile = new StreamWriter(new FileStream(logPath, FileMode.Append, FileAccess.Write, FileShare.Read), Encoding.UTF8);
             }
 
-            Mutex single = new Mutex(true, Program.MutexName, out bool isFirst);
-            if (!isFirst) { Log("another Nvidia-FanCap daemon is already running"); return 3; }
+            // single instance: wait a little for a dying instance to release the
+            // mutex (upgrade installs stop the old daemon and start the new one
+            // within the same second)
+            Mutex single = null;
+            bool isFirst = false;
+            for (int i = 0; i < 20 && single == null; i++)
+            {
+                single = new Mutex(true, Program.MutexName, out isFirst);
+                if (!isFirst) { single.Dispose(); single = null; Thread.Sleep(500); }
+            }
+            if (single == null) { Log("another Nvidia-FanCap daemon is already running"); return 3; }
 
             int rc = Nvml.Init();
             if (rc != Nvml.SUCCESS) { Log("nvmlInit_v2 failed: " + Nvml.Describe(rc)); return 1; }

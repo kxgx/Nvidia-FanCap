@@ -37,7 +37,7 @@ curve before that happens and keeps the fan at your ceiling.
 
 ## Install
 
-**Installer (recommended)** - run `dist\Nvidia-FanCap-1.0.2-x64.msi`:
+**Installer (recommended)** - run `dist\Nvidia-FanCap-1.0.3-x64.msi`:
 
 - installs to `C:\Program Files\Nvidia-FanCap\`
 - adds a Start Menu shortcut (opens the settings UI)
@@ -122,7 +122,7 @@ portable install. Fan control returns to the driver/vBIOS immediately.
 - **风扇上限**：超过就强制拉回（250ms 内接管），低于上限不干预，空载 0RPM 保留
 - **预接管温度**：默认 75 °C，抢在 vBIOS 80 °C 满转之前接管
 - **保险阀**：默认 90 °C 自动放开上限让显卡自保，降温后重新上锁
-- 安装：双击 `dist\Nvidia-FanCap-1.0.2-x64.msi`（装到 Program Files、开始菜单、
+- 安装：双击 `dist\Nvidia-FanCap-1.0.3-x64.msi`（装到 Program Files、开始菜单、
   开机隐藏自启、可从"设置→应用"完整卸载）；绿色使用则拷贝 `dist\` 后运行 `install-task.bat`
 - 改设置：双击 `Nvidia-FanCap-x64.exe`（原生界面、跟随系统深浅色、无需管理员），约 5 秒热生效
 - 构建：`build.bat`（生成单文件 exe + MSI 安装包）

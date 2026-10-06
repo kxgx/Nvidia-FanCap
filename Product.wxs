@@ -10,7 +10,7 @@
 <Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
   <Package Name="Nvidia-FanCap"
            Manufacturer="Nvidia-FanCap"
-           Version="1.0.2"
+           Version="1.0.3"
            UpgradeCode="6F2A9C7E-1D4B-4A83-9E5C-2B7F0A3D8C11"
            Scope="perMachine"
            Language="2052"
