@@ -21,6 +21,61 @@ namespace NvidiaFanCap
     /// </summary>
     public sealed class Settings
     {
+        /// <summary>
+        /// Per-user override folder: used when the settings file next to the
+        /// executable is read-only (e.g. an MSI install under Program Files).
+        /// </summary>
+        public static string OverridePath()
+        {
+            string dir = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Nvidia-FanCap");
+            return Path.Combine(dir, AppInfo.SettingsFileName);
+        }
+
+        /// <summary>
+        /// Where to read settings from. The per-user override wins when it exists,
+        /// otherwise the file next to the executable (portable layout). The GUI and
+        /// the daemon use the same rule, so they always agree on the file.
+        /// </summary>
+        public static string ResolvePath()
+        {
+            string over = OverridePath();
+            if (File.Exists(over)) return over;
+            return Path.Combine(AppContext.BaseDirectory, AppInfo.SettingsFileName);
+        }
+
+        /// <summary>
+        /// Save, falling back to the per-user location when the preferred path is
+        /// not writable (Program Files for a normal user). Returns the path used.
+        /// Writability is probed first so no exception is needed for control flow.
+        /// </summary>
+        public static string SaveSmart(Settings s, string preferred)
+        {
+            string target = IsWritable(preferred) ? preferred : OverridePath();
+            if (!string.Equals(target, preferred, StringComparison.OrdinalIgnoreCase))
+            {
+                try { Directory.CreateDirectory(Path.GetDirectoryName(target)); } catch { }
+            }
+            try { s.Save(target); return target; }
+            catch
+            {
+                string over = OverridePath();
+                try { Directory.CreateDirectory(Path.GetDirectoryName(over)); } catch { }
+                s.Save(over);
+                return over;
+            }
+        }
+
+        private static bool IsWritable(string path)
+        {
+            try
+            {
+                using (FileStream fs = new FileStream(path, FileMode.OpenOrCreate, FileAccess.Write, FileShare.ReadWrite)) { }
+                return true;
+            }
+            catch { return false; }
+        }
+
         public int Cap = 40;
         public string Mode = "cap";          // cap = ceiling only, fixed = constant speed
         public int Interval = 250;           // fastest poll period in ms while policing

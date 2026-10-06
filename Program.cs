@@ -1,6 +1,7 @@
 using System;
 using System.Diagnostics;
 using System.IO;
+using System.Runtime.InteropServices;
 using System.Text;
 
 namespace NvidiaFanCap
@@ -11,9 +12,35 @@ namespace NvidiaFanCap
         internal const string MutexName = AppInfo.MutexName;
         internal const string SettingsFileName = AppInfo.SettingsFileName;
 
+        [DllImport("kernel32.dll")]
+        private static extern bool AttachConsole(int processId);
+        private const int ATTACH_PARENT_PROCESS = -1;
+
         private static int Main(string[] args)
         {
-            string iniPath = Path.Combine(AppContext.BaseDirectory, SettingsFileName);
+            // Windows-subsystem binary: only get a console when a terminal launched us
+            if (args.Length > 0) { try { AttachConsole(ATTACH_PARENT_PROCESS); } catch { } }
+
+            try
+            {
+                return Run(args);
+            }
+            catch (Exception ex)
+            {
+                // never die with an unhandled exception: report and exit cleanly
+                try { File.WriteAllText(Path.Combine(Path.GetTempPath(), "Nvidia-FanCap-error.log"), DateTime.Now + Environment.NewLine + ex); } catch { }
+                try { MessageBoxW(IntPtr.Zero, "Nvidia-FanCap 错误:\n" + ex.Message, "Nvidia-FanCap", 0x0000 | 0x0010); } catch { }
+                try { Console.Error.WriteLine("error: " + ex.Message); } catch { }
+                return 1;
+            }
+        }
+
+        [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+        private static extern int MessageBoxW(IntPtr hWnd, string text, string caption, uint type);
+
+        private static int Run(string[] args)
+        {
+            string iniPath = Settings.ResolvePath();
 
             if (args.Length == 0 || Has(args, "--gui")) return Gui.Run(iniPath);
             if (Has(args, "--install")) return Installer.Install();
@@ -67,9 +94,9 @@ namespace NvidiaFanCap
                 s.Set(pair.Substring(0, eq).Trim().ToLowerInvariant(), pair.Substring(eq + 1).Trim());
             }
             if (s.Cap < 1 || s.Cap > 100) { Console.Error.WriteLine("cap must be 1..100"); return 2; }
-            s.Save(iniPath);
-            Console.WriteLine("saved " + iniPath);
-            return Status(iniPath);
+            string used = Settings.SaveSmart(s, iniPath);
+            Console.WriteLine("saved " + used);
+            return Status(used);
         }
     }
 }

@@ -29,7 +29,7 @@ namespace NvidiaFanCap
         private const uint TBM_GETPOS = WM_USER, TBM_SETPOS = WM_USER + 5,
                            TBM_SETRANGEMIN = WM_USER + 7, TBM_SETRANGEMAX = WM_USER + 8;
         private const int BM_GETCHECK = 0x00F0, BM_SETCHECK = 0x00F1, BST_CHECKED = 1, BST_UNCHECKED = 0;
-        private const int SW_SHOW = 5, MB_OK = 0x0000, MB_ICONINFORMATION = 0x0040;
+        private const int SW_SHOW = 5, MB_OK = 0x0000, MB_ICONINFORMATION = 0x0040, MB_ICONERROR = 0x0010;
 
         [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
         private static extern ushort RegisterClassW(ref WNDCLASSW lpWndClass);
@@ -212,11 +212,20 @@ namespace NvidiaFanCap
                     return IntPtr.Zero;
 
                 case WM_COMMAND:
+                {
                     int id = (int)(wParam.ToInt64() & 0xFFFF);
-                    if (id == ID_APPLY) Apply();
-                    else if (id == ID_RESET) Reset();
-                    else if (id == ID_CLOSE) DestroyWindow(hWnd);
+                    try
+                    {
+                        if (id == ID_APPLY) Apply();
+                        else if (id == ID_RESET) Reset();
+                        else if (id == ID_CLOSE) DestroyWindow(hWnd);
+                    }
+                    catch (Exception ex)
+                    {
+                        MessageBoxW(hWnd, "错误:\n" + ex.Message, "Nvidia-FanCap", MB_OK | MB_ICONERROR);
+                    }
                     return IntPtr.Zero;
+                }
 
                 case WM_TIMER:
                     UpdateStatus();
@@ -250,50 +259,67 @@ namespace NvidiaFanCap
 
         private static void Apply()
         {
-            Settings s = Settings.Load(iniPath);
-            s.Cap = Pos(hCap);
-            s.Preempt = Pos(hPreempt);
-            s.Valve = Pos(hValve);
-            s.ValveEnabled = SendMessageW(hChk, BM_GETCHECK, IntPtr.Zero, IntPtr.Zero).ToInt32() == BST_CHECKED;
-            s.Save(iniPath);
-            settings = s;
-            MessageBoxW(hwnd, "已保存到 Nvidia-FanCap.ini\n\n守护进程约 5 秒内生效，无需重启。", "Nvidia-FanCap", MB_OK | MB_ICONINFORMATION);
+            try
+            {
+                Settings s = Settings.Load(iniPath);
+                s.Cap = Pos(hCap);
+                s.Preempt = Pos(hPreempt);
+                s.Valve = Pos(hValve);
+                s.ValveEnabled = SendMessageW(hChk, BM_GETCHECK, IntPtr.Zero, IntPtr.Zero).ToInt32() == BST_CHECKED;
+                string used = Settings.SaveSmart(s, iniPath);
+                iniPath = used;
+                settings = s;
+                SetWindowTextW(hPath, "设置文件：" + used);
+                MessageBoxW(hwnd, "已保存到:\n" + used + "\n\n守护进程约 5 秒内生效，无需重启。", "Nvidia-FanCap", MB_OK | MB_ICONINFORMATION);
+            }
+            catch (Exception ex)
+            {
+                MessageBoxW(hwnd, "保存失败:\n" + ex.Message, "Nvidia-FanCap", MB_OK | MB_ICONERROR);
+            }
         }
 
         private static void Reset()
         {
-            loading = true;
-            SendMessageW(hCap, TBM_SETPOS, (IntPtr)1, (IntPtr)40);
-            SendMessageW(hPreempt, TBM_SETPOS, (IntPtr)1, (IntPtr)75);
-            SendMessageW(hValve, TBM_SETPOS, (IntPtr)1, (IntPtr)90);
-            SendMessageW(hChk, BM_SETCHECK, (IntPtr)BST_CHECKED, IntPtr.Zero);
-            UpdateValueLabels();
-            loading = false;
+            try
+            {
+                loading = true;
+                SendMessageW(hCap, TBM_SETPOS, (IntPtr)1, (IntPtr)40);
+                SendMessageW(hPreempt, TBM_SETPOS, (IntPtr)1, (IntPtr)75);
+                SendMessageW(hValve, TBM_SETPOS, (IntPtr)1, (IntPtr)90);
+                SendMessageW(hChk, BM_SETCHECK, (IntPtr)BST_CHECKED, IntPtr.Zero);
+                UpdateValueLabels();
+                loading = false;
+            }
+            catch { }
         }
 
         private static void UpdateStatus()
         {
-            if (nvmlReady)
+            try
             {
-                IntPtr device;
-                if (Nvml.GetHandleByIndex(0, out device) == Nvml.SUCCESS)
+                if (nvmlReady)
                 {
-                    uint numFans;
-                    Nvml.GetNumFans(device, out numFans);
-                    StringBuilder sb = new StringBuilder("GPU " + Nvml.ReadTemperature(device) + " °C     风扇 ");
-                    for (int f = 0; f < (int)numFans; f++) sb.Append(Nvml.ReadFan(device, (uint)f)).Append("%  ");
-                    SetWindowTextW(hStatus1, sb.ToString());
+                    IntPtr device;
+                    if (Nvml.GetHandleByIndex(0, out device) == Nvml.SUCCESS)
+                    {
+                        uint numFans;
+                        Nvml.GetNumFans(device, out numFans);
+                        StringBuilder sb = new StringBuilder("GPU " + Nvml.ReadTemperature(device) + " °C     风扇 ");
+                        for (int f = 0; f < (int)numFans; f++) sb.Append(Nvml.ReadFan(device, (uint)f)).Append("%  ");
+                        SetWindowTextW(hStatus1, sb.ToString());
+                    }
                 }
+
+                bool running;
+                Mutex probe = null;
+                try { running = Mutex.TryOpenExisting(AppInfo.MutexName, out probe); } catch { running = false; }
+                if (probe != null) probe.Dispose();
+
+                SetWindowTextW(hStatus2, running
+                    ? "守护进程：运行中（上限 " + (settings != null ? settings.Cap : 40) + "%，改动约 5 秒生效）"
+                    : "守护进程：未运行 - 运行 install-task.bat 或安装 MSI 后才会锁死上限");
             }
-
-            bool running;
-            Mutex probe = null;
-            try { running = Mutex.TryOpenExisting(AppInfo.MutexName, out probe); } catch { running = false; }
-            if (probe != null) probe.Dispose();
-
-            SetWindowTextW(hStatus2, running
-                ? "守护进程：运行中（上限 " + (settings != null ? settings.Cap : 40) + "%，改动约 5 秒生效）"
-                : "守护进程：未运行 - 运行 install-task.bat 或安装 MSI 后才会锁死上限");
+            catch { }
         }
 
         // helpers -----------------------------------------------------------

@@ -142,13 +142,15 @@ namespace NvidiaFanCap
                     if (DateTime.UtcNow >= nextConfigCheck)
                     {
                         nextConfigCheck = DateTime.UtcNow.AddSeconds(5);
-                        DateTime stamp = File.Exists(iniPath) ? File.GetLastWriteTimeUtc(iniPath) : DateTime.MinValue;
-                        if (stamp != iniStamp)
+                        string current = Settings.ResolvePath();   // per-user override may have appeared
+                        DateTime stamp = File.Exists(current) ? File.GetLastWriteTimeUtc(current) : DateTime.MinValue;
+                        if (current != iniPath || stamp != iniStamp)
                         {
+                            iniPath = current;
                             iniStamp = stamp;
-                            cfg = Merge(Settings.Load(iniPath), cli, cliMode, cliValveEnabled);
+                            cfg = Merge(Settings.Load(current), cli, cliMode, cliValveEnabled);
                             Log("settings reloaded: cap=" + cfg.Cap + "% preempt=" + cfg.Preempt + "C valve=" +
-                                cfg.Valve + "C(" + (cfg.ValveEnabled ? "on" : "off") + ")");
+                                cfg.Valve + "C(" + (cfg.ValveEnabled ? "on" : "off") + ") [" + current + "]");
                         }
                     }
 

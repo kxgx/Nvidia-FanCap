@@ -1,7 +1,9 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-    <OutputType>Exe</OutputType>
+    <!-- Windows subsystem: no console window on double click.
+         CLI modes attach to the parent terminal (see Program.Main). -->
+    <OutputType>WinExe</OutputType>
     <TargetFramework>net8.0</TargetFramework>
     <AssemblyName>Nvidia-FanCap-x64</AssemblyName>
     <RootNamespace>NvidiaFanCap</RootNamespace>
