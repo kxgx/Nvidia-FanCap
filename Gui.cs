@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
 using System.Runtime.InteropServices;
 using System.Text;
@@ -83,11 +84,12 @@ namespace NvidiaFanCap
         private static WndProcDelegate wndProc;
 
         private static string iniPath;
-        private static IntPtr hwnd, fontNormal, fontTitle, fontBold, bgBrush;
+        private static IntPtr hwnd, fontNormal, fontTitle, fontBold, fontValue, bgBrush;
         private static IntPtr hCap, hPreempt, hValve, hChk, hCapVal, hPreemptVal, hValveVal, hStatus1, hStatus2, hPath;
         private static int textMain, textSub, textAccent;
         private static bool dark, loading = true, nvmlReady;
         private static Settings settings;
+        private static readonly Dictionary<IntPtr, int> controlColors = new Dictionary<IntPtr, int>();
 
         internal static int Run(string settingsPath)
         {
@@ -96,14 +98,15 @@ namespace NvidiaFanCap
             try { if (dark) SetPreferredAppMode(2); } catch { }
 
             textMain = dark ? RGB(240, 240, 240) : RGB(26, 26, 26);
-            textSub = dark ? RGB(160, 160, 160) : RGB(110, 110, 110);
-            textAccent = dark ? RGB(76, 194, 255) : RGB(0, 103, 192);
+            textSub = dark ? RGB(150, 150, 150) : RGB(115, 115, 115);
+            textAccent = dark ? RGB(76, 194, 255) : RGB(0, 92, 185);
             bgBrush = CreateSolidBrush(dark ? RGB(32, 32, 32) : RGB(243, 243, 243));
 
             double dpi = DpiScale();
             fontNormal = CreateFontW((int)(-12 * dpi), 0, 0, 0, 400, 0, 0, 0, 1, 0, 0, 5, 0, "Segoe UI");
             fontBold = CreateFontW((int)(-12 * dpi), 0, 0, 0, 600, 0, 0, 0, 1, 0, 0, 5, 0, "Segoe UI");
             fontTitle = CreateFontW((int)(-21 * dpi), 0, 0, 0, 600, 0, 0, 0, 1, 0, 0, 5, 0, "Segoe UI");
+            fontValue = CreateFontW((int)(-17 * dpi), 0, 0, 0, 700, 0, 0, 0, 1, 0, 0, 5, 0, "Segoe UI");
 
             INITCOMMONCONTROLSEX icc = new INITCOMMONCONTROLSEX();
             icc.dwSize = (uint)Marshal.SizeOf(typeof(INITCOMMONCONTROLSEX));
@@ -162,29 +165,29 @@ namespace NvidiaFanCap
             Label(p, "Nvidia-FanCap", x, S(18), S(300), S(30), fontTitle, textMain);
             Label(p, "显卡风扇上限设置  ·  64-bit  ·  设置文件：" + ShortPath(iniPath), x, S(50), w, S(18), fontNormal, textSub);
 
-            Label(p, "风扇上限", x, S(86), S(120), S(20), fontBold, textMain);
-            hCapVal = Label(p, "40 %", S(120), S(86), S(120), S(20), fontBold, textAccent);
-            hCap = Trackbar(p, ID_TB_CAP, x, S(108), w, 20, 100);
-            Label(p, "转速超过上限会强制拉回；调低 = 更安静", x, S(142), w, S(18), fontNormal, textSub);
+            Label(p, "风扇上限", x, S(88), S(120), S(20), fontBold, textMain);
+            hCapVal = Label(p, "40 %", S(156), S(82), S(160), S(28), fontValue, textAccent);
+            hCap = Trackbar(p, ID_TB_CAP, x, S(112), w, 20, 100);
+            Label(p, "转速超过上限会强制拉回；调低 = 更安静", x, S(146), w, S(18), fontNormal, textSub);
 
-            Label(p, "预接管温度", x, S(176), S(120), S(20), fontBold, textMain);
-            hPreemptVal = Label(p, "75 °C", S(120), S(176), S(120), S(20), fontBold, textAccent);
-            hPreempt = Trackbar(p, ID_TB_PREEMPT, x, S(198), w, 50, 95);
-            Label(p, "到达此温度提前接管风扇，避免 vBIOS 在 80 °C 突然满转", x, S(232), w, S(18), fontNormal, textSub);
+            Label(p, "预接管温度", x, S(180), S(120), S(20), fontBold, textMain);
+            hPreemptVal = Label(p, "75 °C", S(156), S(174), S(160), S(28), fontValue, textAccent);
+            hPreempt = Trackbar(p, ID_TB_PREEMPT, x, S(204), w, 50, 95);
+            Label(p, "到达此温度提前接管风扇，避免 vBIOS 在 80 °C 突然满转", x, S(238), w, S(18), fontNormal, textSub);
 
-            Label(p, "保险阀温度", x, S(266), S(120), S(20), fontBold, textMain);
-            hValveVal = Label(p, "90 °C", S(120), S(266), S(120), S(20), fontBold, textAccent);
-            hValve = Trackbar(p, ID_TB_VALVE, x, S(288), w, 80, 97);
+            Label(p, "保险阀温度", x, S(272), S(120), S(20), fontBold, textMain);
+            hValveVal = Label(p, "90 °C", S(156), S(266), S(160), S(28), fontValue, textAccent);
+            hValve = Trackbar(p, ID_TB_VALVE, x, S(296), w, 80, 97);
             hChk = CreateWindowExW(0, "BUTTON", "启用保险阀（超过该温度放开上限让显卡自保，强烈建议保留）",
                 WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_AUTOCHECKBOX, x, S(322), w, S(24), p, (IntPtr)ID_CHK_VALVE, instance, IntPtr.Zero);
 
-            hStatus1 = Label(p, "GPU —", x, S(362), w, S(18), fontNormal, textMain);
-            hStatus2 = Label(p, "守护进程：检测中…", x, S(382), w, S(18), fontNormal, textMain);
-            hPath = Label(p, "", x, S(402), w, S(16), fontNormal, textSub);
+            hStatus1 = Label(p, "GPU —", x, S(366), w, S(18), fontNormal, textMain);
+            hStatus2 = Label(p, "守护进程：检测中…", x, S(386), w, S(18), fontNormal, textMain);
+            hPath = Label(p, "", x, S(406), w, S(16), fontNormal, textSub);
 
-            Button(p, "应用", ID_APPLY, x, S(432), S(100));
-            Button(p, "恢复默认", ID_RESET, S(136), S(432), S(100));
-            Button(p, "关闭", ID_CLOSE, S(248), S(432), S(100));
+            Button(p, "应用", ID_APPLY, x, S(436), S(100));
+            Button(p, "恢复默认", ID_RESET, S(136), S(436), S(100));
+            Button(p, "关闭", ID_CLOSE, S(248), S(436), S(100));
         }
 
         private static IntPtr WndProc(IntPtr hWnd, uint msg, IntPtr wParam, IntPtr lParam)
@@ -196,7 +199,9 @@ namespace NvidiaFanCap
                 {
                     IntPtr dc = wParam;
                     SetBkMode(dc, 1); // TRANSPARENT
-                    SetTextColor(dc, (lParam == hCapVal || lParam == hPreemptVal || lParam == hValveVal) ? textAccent : textMain);
+                    int color;
+                    if (!controlColors.TryGetValue(lParam, out color)) color = textMain;
+                    SetTextColor(dc, color);
                     return bgBrush;
                 }
                 case WM_CTLCOLORDLG:
@@ -326,6 +331,7 @@ namespace NvidiaFanCap
             IntPtr handle = CreateWindowExW(0, "STATIC", text, WS_CHILD | WS_VISIBLE, x, y, w, h,
                 parent, IntPtr.Zero, GetModuleHandleW(null), IntPtr.Zero);
             SendMessageW(handle, WM_SETFONT, font, (IntPtr)1);
+            controlColors[handle] = color;
             return handle;
         }
 
