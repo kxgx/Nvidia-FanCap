@@ -10,7 +10,7 @@
 <Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
   <Package Name="Nvidia-FanCap"
            Manufacturer="Nvidia-FanCap"
-           Version="1.0.3"
+           Version="1.0.5"
            UpgradeCode="6F2A9C7E-1D4B-4A83-9E5C-2B7F0A3D8C11"
            Scope="perMachine"
            Language="2052"
@@ -22,9 +22,14 @@
 
     <StandardDirectory Id="ProgramFiles64Folder">
       <Directory Id="INSTALLFOLDER" Name="Nvidia-FanCap">
-        <Component Id="MainFiles">
-          <File Id="ExeFile" Source="dist\Nvidia-FanCap-x64.exe" KeyPath="yes" />
-          <File Id="IniFile" Source="dist\Nvidia-FanCap.ini" />
+        <Component Id="ExeComponent">
+          <File Id="ExeFile" Source="dist\Nvidia-FanCap-x64.exe" KeyPath="yes" DefaultVersion="1.0.5.0" />
+        </Component>
+        <Component Id="IniComponent">
+          <File Id="IniFile" Source="dist\Nvidia-FanCap.ini" DefaultVersion="1.0.5.0" />
+        </Component>
+        <Component Id="TaskXmlComponent">
+          <File Id="TaskXml" Source="task.xml" DefaultVersion="1.0.5.0" />
         </Component>
       </Directory>
     </StandardDirectory>
@@ -45,29 +50,29 @@
     </StandardDirectory>
 
     <Feature Id="ProductFeature" Level="1">
-      <ComponentRef Id="MainFiles" />
+      <ComponentRef Id="ExeComponent" />
+      <ComponentRef Id="IniComponent" />
+      <ComponentRef Id="TaskXmlComponent" />
       <ComponentRef Id="StartMenuShortcut" />
     </Feature>
 
-    <!-- Register/remove the logon task through the system's schtasks.exe: a system
-         binary that can never be missing or file-locked during install (running the
-         freshly installed exe as a custom action fails with MSI error 1721). -->
+    <!-- Register/remove the logon task with the system's schtasks.exe, driven by the
+         installed task.xml (no command-line quoting, battery limits off, no 72h
+         execution time limit). Timing notes: the previous daemon may still hold its
+         executable during an upgrade, so it is stopped/force-killed before files are
+         removed, and the new task is started a moment after it is created. -->
     <CustomAction Id="CreateTask" Directory="SystemFolder"
-                  ExeCommand="schtasks.exe /create /tn NvidiaFanCap /tr &quot;\&quot;[INSTALLFOLDER]Nvidia-FanCap-x64.exe\&quot; --daemon --hidden&quot; /sc onlogon /rl highest /f"
+                  ExeCommand="schtasks.exe /create /tn NvidiaFanCap /xml &quot;[INSTALLFOLDER]task.xml&quot; /f"
                   Execute="immediate" Impersonate="yes" Return="ignore" />
     <CustomAction Id="StartTask" Directory="SystemFolder"
-                  ExeCommand="schtasks.exe /run /tn NvidiaFanCap"
+                  ExeCommand="cmd.exe /c &quot;ping -n 4 127.0.0.1 &gt;nul &amp; schtasks /run /tn NvidiaFanCap&quot;"
                   Execute="immediate" Impersonate="yes" Return="ignore" />
-    <CustomAction Id="StopTask" Directory="SystemFolder"
-                  ExeCommand="schtasks.exe /end /tn NvidiaFanCap"
-                  Execute="immediate" Impersonate="yes" Return="ignore" />
-    <CustomAction Id="DeleteTask" Directory="SystemFolder"
-                  ExeCommand="schtasks.exe /delete /tn NvidiaFanCap /f"
+    <CustomAction Id="UninstallDaemon" Directory="SystemFolder"
+                  ExeCommand="cmd.exe /c &quot;schtasks /end /tn NvidiaFanCap &amp; ping -n 4 127.0.0.1 &gt;nul &amp; taskkill /f /im Nvidia-FanCap-x64.exe &amp; schtasks /delete /tn NvidiaFanCap /f&quot;"
                   Execute="immediate" Impersonate="yes" Return="ignore" />
 
     <InstallExecuteSequence>
-      <Custom Action="StopTask" Before="RemoveFiles" Condition="REMOVE=&quot;ALL&quot;" />
-      <Custom Action="DeleteTask" After="StopTask" Condition="REMOVE=&quot;ALL&quot;" />
+      <Custom Action="UninstallDaemon" Before="RemoveFiles" Condition="REMOVE=&quot;ALL&quot;" />
       <Custom Action="CreateTask" After="InstallFiles" Condition="NOT REMOVE" />
       <Custom Action="StartTask" After="CreateTask" Condition="NOT REMOVE" />
     </InstallExecuteSequence>

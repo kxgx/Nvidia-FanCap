@@ -1,6 +1,7 @@
 using System;
 using System.Diagnostics;
 using System.IO;
+using System.Text;
 
 namespace NvidiaFanCap
 {
@@ -16,15 +17,26 @@ namespace NvidiaFanCap
             string exe = Path.Combine(AppContext.BaseDirectory, AppInfo.ExeName);
             if (!File.Exists(exe)) { Console.WriteLine("missing: " + exe); return 1; }
 
-            string task = AppInfo.TaskName;
-            string action = "\\\"" + exe + "\\\" --daemon --hidden";
-
             KillOtherInstances();
-            Run("schtasks", "/end /tn \"" + task + "\"");
-            int rc = Run("schtasks", "/create /tn \"" + task + "\" /tr \"" + action + "\" /sc onlogon /rl highest /f");
-            if (rc != 0) { Console.WriteLine("schtasks /create failed (" + rc + ") - run as administrator"); return rc; }
-            Run("schtasks", "/run /tn \"" + task + "\"");
-            Console.WriteLine("installed: task \"" + task + "\" registered and started.");
+            Run("schtasks", "/end /tn \"" + AppInfo.TaskName + "\"");
+
+            // register from a generated task definition: no command-line quoting
+            // pitfalls, and the settings that matter are explicit
+            // (battery limits off, no execution time limit)
+            string xmlPath = Path.Combine(Path.GetTempPath(), AppInfo.TaskName + "-task.xml");
+            File.WriteAllText(xmlPath, BuildTaskXml(exe), Encoding.Unicode);   // task XML must be UTF-16
+            try
+            {
+                int rc = Run("schtasks", "/create /tn \"" + AppInfo.TaskName + "\" /xml \"" + xmlPath + "\" /f");
+                if (rc != 0) { Console.WriteLine("schtasks /create failed (" + rc + ") - run as administrator"); return rc; }
+            }
+            finally
+            {
+                try { File.Delete(xmlPath); } catch { }
+            }
+
+            Run("schtasks", "/run /tn \"" + AppInfo.TaskName + "\"");
+            Console.WriteLine("installed: task \"" + AppInfo.TaskName + "\" registered and started.");
             Console.WriteLine("  exe: " + exe);
             return 0;
         }
@@ -37,6 +49,35 @@ namespace NvidiaFanCap
             KillOtherInstances();
             Console.WriteLine("removed: task \"" + task + "\" deleted, fan control is back under driver/vBIOS control.");
             return 0;
+        }
+
+        /// <summary>
+        /// The task definition as XML. Quoting lives in the XML instead of a
+        /// command line, and the two defaults that silently break a background
+        /// daemon are fixed: "stop on battery" and the 72h execution time limit.
+        /// </summary>
+        private static string BuildTaskXml(string exe)
+        {
+            return
+"<?xml version=\"1.0\" encoding=\"UTF-16\"?>\n" +
+"<Task version=\"1.2\" xmlns=\"http://schemas.microsoft.com/windows/2004/02/mit/task\">\n" +
+"  <RegistrationInfo><Description>Nvidia-FanCap - hidden GPU fan ceiling daemon</Description></RegistrationInfo>\n" +
+"  <Triggers><LogonTrigger><Enabled>true</Enabled></LogonTrigger></Triggers>\n" +
+"  <Principals><Principal id=\"Author\"><LogonType>InteractiveToken</LogonType><RunLevel>HighestAvailable</RunLevel></Principal></Principals>\n" +
+"  <Settings>\n" +
+"    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>\n" +
+"    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>\n" +
+"    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>\n" +
+"    <StartWhenAvailable>true</StartWhenAvailable>\n" +
+"    <IdleSettings><StopOnIdleEnd>false</StopOnIdleEnd><RestartOnIdle>false</RestartOnIdle></IdleSettings>\n" +
+"    <AllowStartOnDemand>true</AllowStartOnDemand>\n" +
+"    <Enabled>true</Enabled>\n" +
+"    <Hidden>true</Hidden>\n" +
+"    <ExecutionTimeLimit>PT0S</ExecutionTimeLimit>\n" +
+"    <Priority>7</Priority>\n" +
+"  </Settings>\n" +
+"  <Actions Context=\"Author\"><Exec><Command>" + exe + "</Command><Arguments>--daemon --hidden</Arguments></Exec></Actions>\n" +
+"</Task>\n";
         }
 
         /// <summary>
