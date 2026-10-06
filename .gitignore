@@ -9,6 +9,9 @@ obj/
 *.png
 install-cycle.txt
 
+# local-only scripts (not published)
+selftest.bat
+
 # visual studio / rider
 .vs/
 .idea/

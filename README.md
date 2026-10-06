@@ -94,9 +94,11 @@ build.bat
 
 ## Verify
 
-`selftest.bat` (as administrator) proves the core promise: it pins the fan to
-60%, then lets a 25% ceiling detect and force it back down, and finally checks
-that the daemon stays passive while the GPU is idle.
+To confirm the core promise, pin the fan to a fixed speed (e.g. 60% with
+`--daemon --mode fixed --cap 60`), then run the daemon with a lower ceiling
+(`--daemon --cap 25 --preempt-temp 0 --release-temp 20 --verbose --log check.log`)
+- the log must show `CEILING ENGAGED (fan 60% > cap 25%)`, i.e. the over-limit
+  fan was detected and forced back down.
 
 ## Uninstall
 
@@ -124,4 +126,3 @@ portable install. Fan control returns to the driver/vBIOS immediately.
   开机隐藏自启、可从"设置→应用"完整卸载）；绿色使用则拷贝 `dist\` 后运行 `install-task.bat`
 - 改设置：双击 `Nvidia-FanCap-x64.exe`（原生界面、跟随系统深浅色、无需管理员），约 5 秒热生效
 - 构建：`build.bat`（生成单文件 exe + MSI 安装包）
-- 自测：`selftest.bat`（验证"超过上限强制拉回"）
