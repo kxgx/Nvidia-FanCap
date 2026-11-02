@@ -134,6 +134,7 @@ namespace NvidiaFanCap
                 bool valveOpen = false;
                 int writeErrors = 0;
                 DateTime nextBurstLog = DateTime.MinValue;
+                DateTime nextDriftCheck = DateTime.UtcNow.AddSeconds(5);
                 DateTime started = DateTime.Now;
                 DateTime nextConfigCheck = DateTime.UtcNow.AddSeconds(5);
 
@@ -156,6 +157,14 @@ namespace NvidiaFanCap
                                 cfg.Valve + "C(" + (cfg.ValveEnabled ? "on" : "off") + ") power=" +
                                 (cfg.PowerLimitW > 0 ? cfg.PowerLimitW + "W" : "off") + " [" + current + "]");
                             if (cfg.PowerLimitW != appliedPowerLimit) ApplyPowerLimit(device, cfg.PowerLimitW, ref appliedPowerLimit);
+                            else ReassertPowerLimit(device, cfg.PowerLimitW, ref appliedPowerLimit);
+                        }
+                        else if (DateTime.UtcNow >= nextDriftCheck)
+                        {
+                            // another app (or a driver reload) can silently change the
+                            // power limit; keep ours in place
+                            nextDriftCheck = DateTime.UtcNow.AddSeconds(5);
+                            ReassertPowerLimit(device, cfg.PowerLimitW, ref appliedPowerLimit);
                         }
                     }
 
@@ -199,8 +208,8 @@ namespace NvidiaFanCap
                                 else for (int f = 0; f < (int)numFans; f++) held.Add(f);
                                 if (!Engage(device, held)) { held.Clear(); writeErrors++; }
                             }
-                            if (held.Count > 0 && !WriteCap(device, held, cfg.Cap)) writeErrors++;
                             if (held.Count > 0) EnsureManual(device, held);
+                            if (held.Count > 0 && !WriteCap(device, held, cfg.Cap)) writeErrors++;
                         }
                         else // cap mode
                         {
@@ -330,6 +339,20 @@ namespace NvidiaFanCap
             Log("power limit: " + (now / 1000) + "W (default " + (defaultValue / 1000) + "W) -> " +
                 watts + "W  " + Nvml.Describe(rc));
             applied = watts;
+        }
+
+        /// <summary>
+        /// Put the configured power limit back when something else changed it
+        /// (NVIDIA App's auto-tuning raises it to 110 %, a driver reload resets it).
+        /// </summary>
+        private static void ReassertPowerLimit(IntPtr device, int watts, ref int applied)
+        {
+            if (watts <= 0) return;
+            uint current;
+            if (Nvml.GetPowerLimit(device, out current) != Nvml.SUCCESS) return;
+            if ((int)(current / 1000) == watts) return;
+            Log("power limit drifted to " + (current / 1000) + "W, restoring " + watts + "W");
+            ApplyPowerLimit(device, watts, ref applied);
         }
 
         private static bool WriteCap(IntPtr device, SortedSet<int> fans, int cap)
