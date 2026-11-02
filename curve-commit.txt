@@ -1,0 +1,26 @@
+Add temperature / fan / power curve mode (PCHIP, smoothed, rate limited)
+
+Curve.cs (new): shape-preserving cubic Hermite interpolation (Fritsch-Carlson)
+so the fan and power curves never overshoot between knots; out-of-range values
+clamp to the end points; duplicate/unsorted/NaN input is handled; list parsing
+for the ini format.
+
+Settings: mode=curve plus curve_temp, curve_fan, power_curve_temp,
+power_curve_watt, temp_ema, fan_rate_up, fan_rate_down. All keys have built-in
+defaults, pairs are length-validated and clamped, and the old cap/fixed keys
+behave exactly as before.
+
+Daemon: curve control loop - EMA temperature, PCHIP fan target with 0.75 %
+hysteresis and per-tick rate limits, 0-RPM release below the curve floor and
+re-engage a couple of degrees later, power limit from its own curve (down
+immediately, up at most 6 W per tick), drift correction when another program
+touches the power limit, the safety valve releases both fan and power limit,
+and a card that refuses power-limit writes degrades to fan-curve-only instead
+of exiting.
+
+GUI: "temperature curve mode" checkbox, state restored from the ini.
+
+Measured on the blower 4070 Ti SUPER at 98 % load with the tuned defaults
+(temp 79-83 C, fan 53-55 %): fan change between 500 ms samples 0.11 % average,
+1 % maximum, zero driver overrides; after the load stops the fan follows the
+curve down and the power limit ramps smoothly back to 309 W.

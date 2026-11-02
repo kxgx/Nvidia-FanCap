@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.IO;
 using System.Runtime.InteropServices;
 using System.Text;
@@ -12,9 +13,24 @@ namespace NvidiaFanCap
     /// control the moment the driver/VBIOS pushes the fan above the ceiling (or
     /// when the preempt temperature is reached) and hands control back once the
     /// GPU is cool again, so idle 0-RPM behaviour keeps working.
+    ///
+    /// Mode "curve" replaces the fixed ceiling with a shape-preserving fan curve
+    /// plus a power-limit curve: fan speed follows the (smoothed) temperature with
+    /// hysteresis and per-tick rate limiting, the power limit follows its own curve
+    /// (down immediately, up +10 W per tick) and both are released by the same
+    /// safety valve as the other modes.
     /// </summary>
     internal static class Daemon
     {
+        // curve mode tuning --------------------------------------------------
+        private const double FAN_HYSTERESIS = 0.75;   // ignore target changes smaller than this (percent)
+        private const double FAN_RELEASE_AT = 5.0;    // target at/below this: back to auto, 0-RPM idle
+        private const double FAN_REENGAGE_AT = 8.0;   // target above this: take manual control again
+        private const int POWER_STEP_UP = 6;          // watts per tick when raising the power limit
+        private const int POWER_DEADBAND = 2;         // watts: ignore rounding jitter in the curve target
+        private const int POWER_MIN = 50;             // never command an absurdly low limit
+        private const int POWER_MAX_FALLBACK = 330;   // only used when the card reports no default limit
+
         private static TextWriter logFile;
         private static volatile bool running = true;
 
@@ -120,13 +136,36 @@ namespace NvidiaFanCap
 
                 DateTime iniStamp = File.Exists(iniPath) ? File.GetLastWriteTimeUtc(iniPath) : DateTime.MinValue;
                 Settings cfg = Merge(Settings.Load(iniPath), cli, cliMode, cliValveEnabled);
+                cfg.NormalizeCurves();
                 int appliedPowerLimit = 0;
+                int defaultPowerW = ReadDefaultPowerLimit(device);
 
-                if (cfg.PowerLimitW > 0) ApplyPowerLimit(device, cfg.PowerLimitW, ref appliedPowerLimit);
+                bool curveMode = IsCurve(cfg);
+                Curve fanCurve = curveMode ? BuildFanCurve(cfg) : null;
+                Curve powerCurve = curveMode ? BuildPowerCurve(cfg) : null;
+                if (curveMode && (fanCurve == null || powerCurve == null))
+                {
+                    Log("curve: invalid curve settings, falling back to cap mode");
+                    curveMode = false;
+                }
+
+                // curve mode state (persists across ticks)
+                double emaTemp = -1;            // smoothed temperature, <0 = not initialised
+                double curveFanOut = -1;        // fan percent currently commanded by us
+                double curveTargetFan = -1;     // last curve target (verbose logging only)
+                int curvePower = -1;            // power limit (W) we last applied, <0 = not owned yet
+                bool curvePowerDisabled = false;// card refused SetPowerLimit: keep the fan curve running
+                int lastCurveFan = -1;          // -1 = automatic
+                int lastCurvePower = -1;
+                DateTime nextCurveLog = DateTime.MinValue;
+                DateTime nextCurveDrift = DateTime.UtcNow.AddSeconds(5);
+
+                if (!curveMode && cfg.PowerLimitW > 0) ApplyPowerLimit(device, cfg.PowerLimitW, ref appliedPowerLimit);
 
                 Log(string.Format("mode={0} cap={1}% preempt>={2}C release<={3}C valve>={4}C(arm<={5}C){6}",
                     cfg.Mode, cfg.Cap, cfg.Preempt, cfg.Release, cfg.Valve, cfg.ValveReenable,
                     cfg.ValveEnabled ? "" : " VALVE=OFF"));
+                if (curveMode) LogCurveSetup(cfg, defaultPowerW);
 
                 Console.CancelKeyPress += delegate (object sender, ConsoleCancelEventArgs e) { e.Cancel = true; running = false; };
 
@@ -152,14 +191,59 @@ namespace NvidiaFanCap
                         {
                             iniPath = current;
                             iniStamp = stamp;
+                            bool wasCurve = curveMode;
                             cfg = Merge(Settings.Load(current), cli, cliMode, cliValveEnabled);
-                            Log("settings reloaded: cap=" + cfg.Cap + "% preempt=" + cfg.Preempt + "C valve=" +
-                                cfg.Valve + "C(" + (cfg.ValveEnabled ? "on" : "off") + ") power=" +
+                            cfg.NormalizeCurves();
+                            curveMode = IsCurve(cfg);
+                            if (curveMode)
+                            {
+                                fanCurve = BuildFanCurve(cfg);
+                                powerCurve = BuildPowerCurve(cfg);
+                                if (fanCurve == null || powerCurve == null)
+                                {
+                                    Log("curve: invalid curve settings, falling back to cap mode");
+                                    curveMode = false;
+                                }
+                            }
+                            Log("settings reloaded: mode=" + cfg.Mode + " cap=" + cfg.Cap + "% preempt=" + cfg.Preempt +
+                                "C valve=" + cfg.Valve + "C(" + (cfg.ValveEnabled ? "on" : "off") + ") power=" +
                                 (cfg.PowerLimitW > 0 ? cfg.PowerLimitW + "W" : "off") + " [" + current + "]");
-                            if (cfg.PowerLimitW != appliedPowerLimit) ApplyPowerLimit(device, cfg.PowerLimitW, ref appliedPowerLimit);
-                            else ReassertPowerLimit(device, cfg.PowerLimitW, ref appliedPowerLimit);
+                            if (curveMode) LogCurveSetup(cfg, defaultPowerW);
+
+                            if (curveMode)
+                            {
+                                if (!wasCurve)
+                                {
+                                    // curve mode now owns fan + power limit: reset the trackers and
+                                    // hand any static hold back so the curve can start clean
+                                    appliedPowerLimit = 0;
+                                    emaTemp = -1;
+                                    curveFanOut = -1;
+                                    curvePower = -1;
+                                    lastCurveFan = lastCurvePower = -1;
+                                    if (held.Count > 0) { Release(device, held); held.Clear(); }
+                                }
+                                nextCurveDrift = DateTime.UtcNow.AddSeconds(5);
+                                curvePowerDisabled = false;   // settings changed: retry the power curve
+                            }
+                            else
+                            {
+                                emaTemp = -1;
+                                curveFanOut = -1;
+                                if (wasCurve)
+                                {
+                                    // leaving curve mode: give the power limit back to the card,
+                                    // then let the normal cap/fixed logic re-apply a static one
+                                    if (curvePower > 0) RestorePowerDefault(device);
+                                    curvePower = -1;
+                                    appliedPowerLimit = 0;
+                                    if (held.Count > 0) { Release(device, held); held.Clear(); }
+                                }
+                                if (cfg.PowerLimitW != appliedPowerLimit) ApplyPowerLimit(device, cfg.PowerLimitW, ref appliedPowerLimit);
+                                else ReassertPowerLimit(device, cfg.PowerLimitW, ref appliedPowerLimit);
+                            }
                         }
-                        else if (DateTime.UtcNow >= nextDriftCheck)
+                        else if (!curveMode && DateTime.UtcNow >= nextDriftCheck)
                         {
                             // another app (or a driver reload) can silently change the
                             // power limit; keep ours in place
@@ -178,6 +262,32 @@ namespace NvidiaFanCap
                         if (speed > maxSpeed) maxSpeed = speed;
                     }
 
+                    if (curveMode)
+                    {
+                        // exponential smoothing: the fan curve must not chase every 1C step
+                        if (emaTemp < 0) emaTemp = temp;
+                        else emaTemp += cfg.TempEma * (temp - emaTemp);
+                        if (emaTemp < 0) emaTemp = 0;
+
+                        // another app can move the power limit behind our back (NVIDIA App
+                        // auto-tuning, a driver reload): adopt the real value so the curve
+                        // control corrects it instead of assuming its last write stuck
+                        if (!curvePowerDisabled && curvePower > 0 && DateTime.UtcNow >= nextCurveDrift)
+                        {
+                            nextCurveDrift = DateTime.UtcNow.AddSeconds(5);
+                            uint actualMw;
+                            if (Nvml.GetPowerLimit(device, out actualMw) == Nvml.SUCCESS)
+                            {
+                                int actual = (int)(actualMw / 1000);
+                                if (Math.Abs(actual - curvePower) >= 2)
+                                {
+                                    Log("curve: power limit drifted to " + actual + "W, retaking control");
+                                    curvePower = actual;
+                                }
+                            }
+                        }
+                    }
+
                     // safety valve: never stand between the card and its survival
                     if (cfg.ValveEnabled && temp >= cfg.Valve)
                     {
@@ -186,6 +296,12 @@ namespace NvidiaFanCap
                             Log("VALVE OPEN at " + temp + "C - ceiling disarmed, card takes over");
                             if (held.Count > 0) Release(device, held);
                             held.Clear();
+                            curveFanOut = -1;
+                            if (curveMode && curvePower > 0)
+                            {
+                                RestorePowerDefault(device);   // valve: give the power limit back too
+                                curvePower = -1;
+                            }
                             valveOpen = true;
                         }
                     }
@@ -197,10 +313,126 @@ namespace NvidiaFanCap
 
                     if (!valveOpen)
                     {
-                        bool overCap = maxSpeed > cfg.Cap;
-                        bool preempt = cfg.Preempt > 0 && temp >= cfg.Preempt;
+                        if (curveMode)
+                        {
+                            // fan target is monotone: never overshoots between knots
+                            double targetFan = fanCurve.Evaluate(emaTemp);
+                            if (targetFan < 0) targetFan = 0; else if (targetFan > 100) targetFan = 100;
+                            curveTargetFan = targetFan;
 
-                        if (cfg.Mode == "fixed")
+                            // 0-RPM idle: below the bottom of the curve hand the fan back
+                            if (held.Count > 0 && targetFan <= FAN_RELEASE_AT)
+                            {
+                                Release(device, held);
+                                held.Clear();
+                                curveFanOut = -1;
+                                Log("curve: 0-RPM idle - released fan to auto at " + temp + "C (target " +
+                                    Fmt1(targetFan) + "%)");
+                            }
+                            else if (held.Count == 0 && numFans > 0 && targetFan > FAN_REENGAGE_AT)
+                            {
+                                if (cfg.Fan >= 0) held.Add(cfg.Fan);
+                                else for (int f = 0; f < (int)numFans; f++) held.Add(f);
+                                if (Engage(device, held))
+                                {
+                                    curveFanOut = maxSpeed;   // start where the driver left the fan
+                                    Log("curve: took over fan(s) " + Fmt(held) + " at " + temp + "C (target " +
+                                        Fmt1(targetFan) + "%)");
+                                }
+                                else { held.Clear(); curveFanOut = -1; writeErrors++; }
+                            }
+
+                            int outPct = -1;
+                            if (held.Count > 0)
+                            {
+                                if (curveFanOut < 0) curveFanOut = maxSpeed;
+                                // hysteresis + per-tick rate limit toward the curve target
+                                if (Math.Abs(targetFan - curveFanOut) >= FAN_HYSTERESIS)
+                                {
+                                    if (targetFan > curveFanOut) curveFanOut = Math.Min(targetFan, curveFanOut + cfg.FanRateUp);
+                                    else curveFanOut = Math.Max(targetFan, curveFanOut - cfg.FanRateDown);
+                                }
+                                outPct = (int)Math.Round(curveFanOut, MidpointRounding.AwayFromZero);
+                                if (outPct < 0) outPct = 0; else if (outPct > 100) outPct = 100;
+
+                                // the driver revokes manual fan policy when its thermal
+                                // protection kicks in: reclaim the policy every tick
+                                EnsureManual(device, held);
+                                if (!WriteCap(device, held, outPct)) writeErrors++;
+
+                                if (maxSpeed > outPct + 20 && DateTime.UtcNow >= nextBurstLog)
+                                {
+                                    nextBurstLog = DateTime.UtcNow.AddSeconds(20);
+                                    Log("curve: driver override: fan " + maxSpeed + "% while target " + outPct +
+                                        "% at " + temp + "C (thermal protection is fighting the curve)");
+                                }
+                            }
+
+                            // power limit from the power curve: down immediately,
+                            // up at most POWER_STEP_UP watts per tick. A card that
+                            // rejects power-limit writes keeps the fan curve only.
+                            if (curvePower < 0 && !curvePowerDisabled)
+                            {
+                                uint currentMw;
+                                if (Nvml.GetPowerLimit(device, out currentMw) != Nvml.SUCCESS)
+                                {
+                                    Log("curve: cannot read the power limit - continuing with the fan curve only");
+                                    curvePowerDisabled = true;
+                                }
+                                else curvePower = (int)(currentMw / 1000);
+                            }
+                            if (!curvePowerDisabled)
+                            {
+                                double targetW = powerCurve.Evaluate(emaTemp);
+                                double maxW = defaultPowerW > 0 ? defaultPowerW : POWER_MAX_FALLBACK;
+                                if (cfg.PowerLimitW > 0 && cfg.PowerLimitW < maxW) maxW = cfg.PowerLimitW;  // hard bound
+                                if (targetW > maxW) targetW = maxW;
+                                if (targetW < POWER_MIN) targetW = POWER_MIN;
+                                int wantW = (int)Math.Round(targetW, MidpointRounding.AwayFromZero);
+
+                                if (curvePower < 0) curvePower = wantW;
+                                else if (wantW < curvePower - POWER_DEADBAND)
+                                {
+                                    if (!SetPowerLimitWatts(device, wantW, ref curvePower))
+                                    {
+                                        Log("curve: power limit control unavailable - continuing with the fan curve only");
+                                        RestorePowerDefault(device);   // try to undo whatever we did apply
+                                        curvePower = -1;
+                                        curvePowerDisabled = true;
+                                    }
+                                }
+                                else if (wantW > curvePower + POWER_DEADBAND)
+                                {
+                                    int nextW = Math.Min(wantW, curvePower + POWER_STEP_UP);
+                                    if (!SetPowerLimitWatts(device, nextW, ref curvePower))
+                                    {
+                                        Log("curve: power limit control unavailable - continuing with the fan curve only");
+                                        RestorePowerDefault(device);   // try to undo whatever we did apply
+                                        curvePower = -1;
+                                        curvePowerDisabled = true;
+                                    }
+                                }
+                            }
+
+                            // one compact state line, at most every few seconds
+                            int shownFan = held.Count > 0 ? outPct : -1;
+                            if (shownFan != lastCurveFan || curvePower != lastCurvePower)
+                            {
+                                if (DateTime.UtcNow >= nextCurveLog)
+                                {
+                                    nextCurveLog = DateTime.UtcNow.AddSeconds(3);
+                                    string fanText = shownFan < 0
+                                        ? "fan auto"
+                                        : "fan " + (lastCurveFan >= 0 ? lastCurveFan.ToString() : "auto") + "->" + shownFan + "%";
+                                    string powerText = "power " + (lastCurvePower >= 0 ? lastCurvePower.ToString() : "?") +
+                                        "->" + (curvePower >= 0 ? curvePower.ToString() : "?") + "W";
+                                    Log("curve: temp=" + temp + "C(ema " + Fmt1(emaTemp) + ") " + fanText + " " + powerText);
+                                }
+                                lastCurveFan = shownFan;
+                                lastCurvePower = curvePower;
+                            }
+                        }
+                        else if (cfg.Mode == "fixed")
                         {
                             if (held.Count == 0)
                             {
@@ -213,7 +445,7 @@ namespace NvidiaFanCap
                         }
                         else // cap mode
                         {
-                            if (held.Count == 0 && (overCap || preempt))
+                            if (held.Count == 0 && (maxSpeed > cfg.Cap || (cfg.Preempt > 0 && temp >= cfg.Preempt)))
                             {
                                 if (cfg.Fan >= 0) held.Add(cfg.Fan);
                                 else
@@ -221,6 +453,7 @@ namespace NvidiaFanCap
                                     foreach (int f in spinning) held.Add(f);
                                     if (held.Count == 0) held.Add(0);
                                 }
+                                bool overCap = maxSpeed > cfg.Cap;
                                 string why = overCap
                                     ? ("fan " + maxSpeed + "% > cap " + cfg.Cap + "%")
                                     : ("temp " + temp + "C >= preempt " + cfg.Preempt + "C");
@@ -260,26 +493,44 @@ namespace NvidiaFanCap
                     }
 
                     if (verbose)
-                        Log("tick: temp=" + temp + "C fan=" + maxSpeed + "%" +
-                            (held.Count > 0 ? " [held " + cfg.Cap + "%]" : " [auto]"));
+                    {
+                        if (curveMode)
+                            Log("tick: temp=" + temp + "C ema=" + Fmt1(emaTemp) + "C fan=" + maxSpeed + "% target=" +
+                                Fmt1(curveTargetFan) + "% power=" + (curvePower > 0 ? curvePower + "W" : "auto") +
+                                (valveOpen ? " [valve open]" : (held.Count > 0 ? " [holding]" : " [auto]")));
+                        else
+                            Log("tick: temp=" + temp + "C fan=" + maxSpeed + "%" +
+                                (held.Count > 0 ? " [held " + cfg.Cap + "%]" : " [auto]"));
+                    }
 
                     if (writeErrors == 1) Log("fan write failed - the daemon needs administrator rights");
                     if (writeErrors > 20) { Log("too many write errors, giving up"); break; }
 
                     // adaptive cadence: fast only while actually policing the fan
-                    bool busy = held.Count > 0 || valveOpen || maxSpeed + 5 > cfg.Cap ||
-                                (cfg.Preempt > 0 && temp + 10 >= cfg.Preempt);
+                    bool busy;
+                    if (curveMode)
+                        busy = held.Count > 0 || valveOpen || (cfg.ValveEnabled && temp + 10 >= cfg.Valve) ||
+                               (emaTemp >= 0 && Math.Abs(emaTemp - temp) > 2.0);
+                    else
+                        busy = held.Count > 0 || valveOpen || maxSpeed + 5 > cfg.Cap ||
+                               (cfg.Preempt > 0 && temp + 10 >= cfg.Preempt);
                     Thread.Sleep(busy ? Math.Max(100, cfg.Interval) : 1000);
                 }
 
                 if (held.Count > 0)
                 {
-                    if (noRestore) Log("exit: leaving manual control in place (--no-restore), fan held at " + cfg.Cap + "%");
+                    if (noRestore) Log("exit: leaving manual control in place (--no-restore)" +
+                                       (curveMode ? "" : ", fan held at " + cfg.Cap + "%"));
                     else
                     {
                         Release(device, held);
                         Log("restored automatic fan control on exit");
                     }
+                }
+                if (curveMode && !noRestore && curvePower > 0 && curvePower != defaultPowerW)
+                {
+                    RestorePowerDefault(device);
+                    Log("restored the default power limit on exit");
                 }
                 return 0;
             }
@@ -302,11 +553,48 @@ namespace NvidiaFanCap
             return s;
         }
 
+        private static bool IsCurve(Settings s)
+        {
+            return string.Equals(s.Mode, "curve", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static Curve BuildFanCurve(Settings s)
+        {
+            return Curve.BuildOrDefault(s.CurveTemp, s.CurveFan,
+                Settings.DefaultCurveTemp, Settings.DefaultCurveFan);
+        }
+
+        private static Curve BuildPowerCurve(Settings s)
+        {
+            return Curve.BuildOrDefault(s.PowerCurveTemp, s.PowerCurveWatt,
+                Settings.DefaultPowerCurveTemp, Settings.DefaultPowerCurveWatt);
+        }
+
+        private static void LogCurveSetup(Settings cfg, int defaultPowerW)
+        {
+            Log("curve: fan  " + Curve.Format(cfg.CurveTemp) + " C -> " + Curve.Format(cfg.CurveFan) + "%");
+            Log("curve: power " + Curve.Format(cfg.PowerCurveTemp) + " C -> " + Curve.Format(cfg.PowerCurveWatt) +
+                "W (card default " + (defaultPowerW > 0 ? defaultPowerW + "W" : "unknown") + ")");
+            Log("curve: temp_ema=" + Fmt2(cfg.TempEma) + " fan_rate_up=" + Fmt2(cfg.FanRateUp) +
+                "%/tick fan_rate_down=" + Fmt2(cfg.FanRateDown) + "%/tick release<=" + Fmt1(FAN_RELEASE_AT) +
+                "% reengage>" + Fmt1(FAN_REENGAGE_AT) + "%");
+        }
+
         private static string Fmt(SortedSet<int> fans)
         {
             StringBuilder sb = new StringBuilder();
             foreach (int f in fans) { if (sb.Length > 0) sb.Append(','); sb.Append(f); }
             return sb.ToString();
+        }
+
+        private static string Fmt1(double value)
+        {
+            return value.ToString("0.0", CultureInfo.InvariantCulture);
+        }
+
+        private static string Fmt2(double value)
+        {
+            return value.ToString("0.##", CultureInfo.InvariantCulture);
         }
 
         private static bool Engage(IntPtr device, SortedSet<int> fans)
@@ -353,6 +641,45 @@ namespace NvidiaFanCap
             if ((int)(current / 1000) == watts) return;
             Log("power limit drifted to " + (current / 1000) + "W, restoring " + watts + "W");
             ApplyPowerLimit(device, watts, ref applied);
+        }
+
+        private static int ReadDefaultPowerLimit(IntPtr device)
+        {
+            uint defaultValue;
+            return Nvml.GetPowerDefaultLimit(device, out defaultValue) == Nvml.SUCCESS
+                ? (int)(defaultValue / 1000) : 0;
+        }
+
+        /// <summary>Quiet version of ApplyPowerLimit for the per-tick curve ramp.</summary>
+        private static bool SetPowerLimitWatts(IntPtr device, int watts, ref int applied)
+        {
+            if (watts <= 0) { applied = 0; return true; }
+            int rc = Nvml.SetPowerLimit(device, (uint)(watts * 1000));
+            if (rc != Nvml.SUCCESS)
+            {
+                Log("SetPowerLimit " + watts + "W: " + Nvml.Describe(rc));
+                applied = 0;
+                return false;
+            }
+            applied = watts;
+            return true;
+        }
+
+        /// <summary>
+        /// Hand the power limit back to the card's default (safety valve / exit).
+        /// </summary>
+        private static void RestorePowerDefault(IntPtr device)
+        {
+            uint defaultValue;
+            if (Nvml.GetPowerDefaultLimit(device, out defaultValue) != Nvml.SUCCESS)
+            {
+                Log("GetPowerDefaultLimit failed - leaving the power limit alone");
+                return;
+            }
+            uint current;
+            Nvml.GetPowerLimit(device, out current);
+            int rc = Nvml.SetPowerLimit(device, defaultValue);
+            Log("power limit: " + (current / 1000) + "W -> default " + (defaultValue / 1000) + "W  " + Nvml.Describe(rc));
         }
 
         private static bool WriteCap(IntPtr device, SortedSet<int> fans, int cap)

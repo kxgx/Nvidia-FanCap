@@ -37,7 +37,7 @@ curve before that happens and keeps the fan at your ceiling.
 
 ## Install
 
-**Installer (recommended)** - run `dist\Nvidia-FanCap-1.0.16-x64.msi`:
+**Installer (recommended)** - run `dist\Nvidia-FanCap-1.0.19-x64.msi`:
 
 - installs to `C:\Program Files\Nvidia-FanCap\`
 - adds a Start Menu shortcut (opens the settings UI)
@@ -68,15 +68,44 @@ Nvidia-FanCap-x64.exe --daemon --log file --verbose --duration 60   debug
 | key | default | meaning |
 | --- | --- | --- |
 | `cap` | 40 | fan ceiling in percent |
-| `mode` | cap | `cap` = ceiling only, `fixed` = constant speed |
+| `mode` | cap | `cap` = ceiling only, `fixed` = constant speed, `curve` = temperature curves |
 | `preempt` | 75 | take control at this temperature (0 = reactive only) |
 | `release` | 45 | hand control back below this temperature |
 | `valve` | 90 | safety valve temperature |
 | `valve_reenable` | 84 | re-arm the ceiling below this temperature |
 | `valve_enabled` | 1 | keep the safety valve on |
-| `power_limit` | 0 | power limit in watts applied at start (0 = unchanged) |
+| `power_limit` | 0 | power limit in watts applied at start (0 = unchanged; curve mode: hard upper bound) |
 | `interval` | 250 | fastest poll period in ms while policing |
 | `fan` | -1 | which fan to control (-1 = automatic) |
+| `curve_temp` | 35,50,55,62,70,76,80,83,86,90 | fan-curve knots (°C) |
+| `curve_fan` | 0,0,24,30,37,43,49,58,72,100 | fan percent at each knot |
+| `power_curve_temp` | 60,70,76,80,83,86,90 | power-curve knots (°C) |
+| `power_curve_watt` | 310,255,205,170,140,120,100 | power limit (W) at each knot |
+| `temp_ema` | 0.25 | temperature smoothing (lower = smoother, slower) |
+| `fan_rate_up` / `fan_rate_down` | 2.0 / 1.0 | max fan change per tick (percent) |
+
+## Curve mode (`mode=curve`)
+
+Instead of a hard ceiling, the fan speed follows a shape-preserving (PCHIP)
+temperature curve and the power limit follows its own curve:
+
+- temperature is exponentially smoothed (`temp_ema`) so the fan never chases a
+  single degree,
+- the fan moves toward the curve target with hysteresis (±0.75 %) and rate
+  limits (`fan_rate_up/down`), so speed changes stay gradual and audible ramps
+  are smooth,
+- the power limit drops immediately when the curve says less, but rises at most
+  6 W per tick, so it never slams back and forth,
+- at the bottom of the curve the fan is handed back to the driver (0-RPM idle)
+  and retaken a couple of degrees later,
+- the safety valve still applies: at `valve` °C the fan is released and the
+  power limit is restored to the card default.
+
+Measured on the blower 4070 Ti SUPER at 98 % load with the default curves:
+temperature 79-84 °C, fan 53-54 %, max change between samples 1 %, and the
+driver never forced the fan to 100 % (which it does above ~84-86 °C).
+
+Tune the curves by editing the four keys; the GUI checkbox toggles the mode.
 
 ## Build from source
 
@@ -143,10 +172,13 @@ in the GUI) and the ceiling holds continuously.
 - **风扇上限**：超过就强制拉回（250ms 内接管），低于上限不干预，空载 0RPM 保留
 - **预接管温度**：默认 75 °C，抢在 vBIOS 80 °C 满转之前接管
 - **保险阀**：默认 90 °C 自动放开上限让显卡自保，降温后重新上锁
-- 安装：双击 `dist\Nvidia-FanCap-1.0.16-x64.msi`（装到 Program Files、开始菜单、
+- 安装：双击 `dist\Nvidia-FanCap-1.0.19-x64.msi`（装到 Program Files、开始菜单、
   开机隐藏自启、可从"设置→应用"完整卸载）；绿色使用则拷贝 `dist\` 后运行 `install-task.bat`
 - 改设置：双击 `Nvidia-FanCap-x64.exe`（原生界面、跟随系统深浅色、无需管理员），约 5 秒热生效
 - 构建：`build.bat`（生成单文件 exe + MSI 安装包）
+
+
+
 
 
 

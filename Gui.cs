@@ -17,7 +17,7 @@ namespace NvidiaFanCap
     {
         // control ids
         private const int ID_TB_CAP = 101, ID_TB_PREEMPT = 102, ID_TB_VALVE = 103, ID_CHK_VALVE = 104, ID_TB_POWER = 108;
-        private const int ID_APPLY = 105, ID_RESET = 106, ID_CLOSE = 107;
+        private const int ID_APPLY = 105, ID_RESET = 106, ID_CLOSE = 107, ID_CHK_CURVE = 109;
 
         // win32 constants
         private const uint WS_CAPTION = 0x00C00000, WS_SYSMENU = 0x00080000, WS_VISIBLE = 0x10000000,
@@ -86,7 +86,7 @@ namespace NvidiaFanCap
         private static string iniPath;
         private static IntPtr hwnd, fontNormal, fontTitle, fontBold, fontValue, bgBrush;
         private static IntPtr hCap, hPreempt, hValve, hChk, hCapVal, hPreemptVal, hValveVal, hStatus1, hStatus2, hPath;
-        private static IntPtr hPower, hPowerVal;
+        private static IntPtr hPower, hPowerVal, hCurveChk;
         private static int textMain, textSub, textAccent;
         private static bool dark, loading = true, nvmlReady;
         private static Settings settings;
@@ -123,7 +123,7 @@ namespace NvidiaFanCap
             wc.lpszClassName = "NvidiaFanCapSettings";
             RegisterClassW(ref wc);
 
-            int w = S(600), h = S(600);
+            int w = S(600), h = S(620);
             hwnd = CreateWindowExW(0, "NvidiaFanCapSettings", "Nvidia-FanCap - 显卡风扇上限设置",
                 WS_CAPTION | WS_SYSMENU | WS_VISIBLE,
                 (GetSystemMetrics(0) - w) / 2, (GetSystemMetrics(1) - h) / 2, w, h,
@@ -188,13 +188,17 @@ namespace NvidiaFanCap
             Label(p, "这是真正决定能否守住低转速的旋钮：40% 上限建议 150 W（实测 150W 时风扇全程不被驱动力拉满）",
                 x, S(408), w, S(18), fontNormal, textSub);
 
-            hStatus1 = Label(p, "GPU —", x, S(444), w, S(18), fontNormal, textMain);
-            hStatus2 = Label(p, "守护进程：检测中…", x, S(464), w, S(18), fontNormal, textMain);
-            hPath = Label(p, "", x, S(484), w, S(16), fontNormal, textSub);
+            hCurveChk = CreateWindowExW(0, "BUTTON", "温度曲线模式（更顺滑）：按温度曲线自动调风扇和功耗墙",
+                WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_AUTOCHECKBOX, x, S(432), w, S(24), p, (IntPtr)ID_CHK_CURVE, instance, IntPtr.Zero);
+            if (dark) { try { SetWindowTheme(hCurveChk, "DarkMode_Explorer", null); } catch { } }
 
-            Button(p, "应用", ID_APPLY, x, S(516), S(100));
-            Button(p, "恢复默认", ID_RESET, S(136), S(516), S(100));
-            Button(p, "关闭", ID_CLOSE, S(248), S(516), S(100));
+            hStatus1 = Label(p, "GPU —", x, S(462), w, S(18), fontNormal, textMain);
+            hStatus2 = Label(p, "守护进程：检测中…", x, S(482), w, S(18), fontNormal, textMain);
+            hPath = Label(p, "", x, S(502), w, S(16), fontNormal, textSub);
+
+            Button(p, "应用", ID_APPLY, x, S(534), S(100));
+            Button(p, "恢复默认", ID_RESET, S(136), S(534), S(100));
+            Button(p, "关闭", ID_CLOSE, S(248), S(534), S(100));
         }
 
         private static IntPtr WndProc(IntPtr hWnd, uint msg, IntPtr wParam, IntPtr lParam)
@@ -253,6 +257,9 @@ namespace NvidiaFanCap
             SendMessageW(hPreempt, TBM_SETPOS, (IntPtr)1, (IntPtr)settings.Preempt);
             SendMessageW(hValve, TBM_SETPOS, (IntPtr)1, (IntPtr)settings.Valve);
             SendMessageW(hChk, BM_SETCHECK, (IntPtr)(settings.ValveEnabled ? BST_CHECKED : BST_UNCHECKED), IntPtr.Zero);
+            SendMessageW(hCurveChk, BM_SETCHECK,
+                (IntPtr)(string.Equals(settings.Mode, "curve", StringComparison.OrdinalIgnoreCase) ? BST_CHECKED : BST_UNCHECKED),
+                IntPtr.Zero);
             SendMessageW(hPower, TBM_SETPOS, (IntPtr)1, (IntPtr)(settings.PowerLimitW > 0 ? settings.PowerLimitW : 310));
             UpdateValueLabels();
         }
@@ -276,6 +283,12 @@ namespace NvidiaFanCap
                 s.Valve = Pos(hValve);
                 s.ValveEnabled = SendMessageW(hChk, BM_GETCHECK, IntPtr.Zero, IntPtr.Zero).ToInt32() == BST_CHECKED;
                 s.PowerLimitW = Power();
+                // checked = temperature curve mode; unchecking only leaves curve mode,
+                // it does not silently turn a hand-configured "fixed" install into "cap"
+                if (SendMessageW(hCurveChk, BM_GETCHECK, IntPtr.Zero, IntPtr.Zero).ToInt32() == BST_CHECKED)
+                    s.Mode = "curve";
+                else if (string.Equals(s.Mode, "curve", StringComparison.OrdinalIgnoreCase))
+                    s.Mode = "cap";
                 string used = Settings.SaveSmart(s, iniPath);
                 iniPath = used;
                 settings = s;
@@ -297,6 +310,7 @@ namespace NvidiaFanCap
                 SendMessageW(hPreempt, TBM_SETPOS, (IntPtr)1, (IntPtr)75);
                 SendMessageW(hValve, TBM_SETPOS, (IntPtr)1, (IntPtr)90);
                 SendMessageW(hChk, BM_SETCHECK, (IntPtr)BST_CHECKED, IntPtr.Zero);
+                SendMessageW(hCurveChk, BM_SETCHECK, (IntPtr)BST_UNCHECKED, IntPtr.Zero);
                 SendMessageW(hPower, TBM_SETPOS, (IntPtr)1, (IntPtr)310);
                 UpdateValueLabels();
                 loading = false;
@@ -326,8 +340,11 @@ namespace NvidiaFanCap
                 try { running = Mutex.TryOpenExisting(AppInfo.MutexName, out probe); } catch { running = false; }
                 if (probe != null) probe.Dispose();
 
+                bool curve = settings != null && string.Equals(settings.Mode, "curve", StringComparison.OrdinalIgnoreCase);
                 SetWindowTextW(hStatus2, running
-                    ? "守护进程：运行中（上限 " + (settings != null ? settings.Cap : 40) + "%，改动约 5 秒生效）"
+                    ? (curve
+                        ? "守护进程：运行中（温度曲线模式，改动约 5 秒生效）"
+                        : "守护进程：运行中（上限 " + (settings != null ? settings.Cap : 40) + "%，改动约 5 秒生效）")
                     : "守护进程：未运行 - 运行 install-task.bat 或安装 MSI 后才会锁死上限");
             }
             catch { }
