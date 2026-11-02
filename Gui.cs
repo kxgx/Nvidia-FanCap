@@ -16,7 +16,7 @@ namespace NvidiaFanCap
     internal static class Gui
     {
         // control ids
-        private const int ID_TB_CAP = 101, ID_TB_PREEMPT = 102, ID_TB_VALVE = 103, ID_CHK_VALVE = 104;
+        private const int ID_TB_CAP = 101, ID_TB_PREEMPT = 102, ID_TB_VALVE = 103, ID_CHK_VALVE = 104, ID_TB_POWER = 108;
         private const int ID_APPLY = 105, ID_RESET = 106, ID_CLOSE = 107;
 
         // win32 constants
@@ -86,6 +86,7 @@ namespace NvidiaFanCap
         private static string iniPath;
         private static IntPtr hwnd, fontNormal, fontTitle, fontBold, fontValue, bgBrush;
         private static IntPtr hCap, hPreempt, hValve, hChk, hCapVal, hPreemptVal, hValveVal, hStatus1, hStatus2, hPath;
+        private static IntPtr hPower, hPowerVal;
         private static int textMain, textSub, textAccent;
         private static bool dark, loading = true, nvmlReady;
         private static Settings settings;
@@ -122,7 +123,7 @@ namespace NvidiaFanCap
             wc.lpszClassName = "NvidiaFanCapSettings";
             RegisterClassW(ref wc);
 
-            int w = S(600), h = S(520);
+            int w = S(600), h = S(600);
             hwnd = CreateWindowExW(0, "NvidiaFanCapSettings", "Nvidia-FanCap - 显卡风扇上限设置",
                 WS_CAPTION | WS_SYSMENU | WS_VISIBLE,
                 (GetSystemMetrics(0) - w) / 2, (GetSystemMetrics(1) - h) / 2, w, h,
@@ -170,24 +171,30 @@ namespace NvidiaFanCap
             hCap = Trackbar(p, ID_TB_CAP, x, S(112), w, 20, 100);
             Label(p, "转速超过上限会强制拉回；调低 = 更安静", x, S(146), w, S(18), fontNormal, textSub);
 
-            Label(p, "预接管温度", x, S(180), S(120), S(20), fontBold, textMain);
-            hPreemptVal = Label(p, "75 °C", S(156), S(174), S(160), S(28), fontValue, textAccent);
-            hPreempt = Trackbar(p, ID_TB_PREEMPT, x, S(204), w, 50, 95);
-            Label(p, "到达此温度提前接管风扇，避免 vBIOS 在 80 °C 突然满转", x, S(238), w, S(18), fontNormal, textSub);
+            Label(p, "预接管温度", x, S(166), S(120), S(20), fontBold, textMain);
+            hPreemptVal = Label(p, "75 °C", S(156), S(160), S(160), S(28), fontValue, textAccent);
+            hPreempt = Trackbar(p, ID_TB_PREEMPT, x, S(190), w, 50, 95);
+            Label(p, "到达此温度提前接管风扇，避免 vBIOS 在 80 °C 突然满转", x, S(224), w, S(18), fontNormal, textSub);
 
-            Label(p, "保险阀温度", x, S(272), S(120), S(20), fontBold, textMain);
-            hValveVal = Label(p, "90 °C", S(156), S(266), S(160), S(28), fontValue, textAccent);
-            hValve = Trackbar(p, ID_TB_VALVE, x, S(296), w, 80, 97);
+            Label(p, "保险阀温度", x, S(258), S(120), S(20), fontBold, textMain);
+            hValveVal = Label(p, "90 °C", S(156), S(252), S(160), S(28), fontValue, textAccent);
+            hValve = Trackbar(p, ID_TB_VALVE, x, S(282), w, 80, 97);
             hChk = CreateWindowExW(0, "BUTTON", "启用保险阀（超过该温度放开上限让显卡自保，强烈建议保留）",
-                WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_AUTOCHECKBOX, x, S(322), w, S(24), p, (IntPtr)ID_CHK_VALVE, instance, IntPtr.Zero);
+                WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_AUTOCHECKBOX, x, S(308), w, S(24), p, (IntPtr)ID_CHK_VALVE, instance, IntPtr.Zero);
 
-            hStatus1 = Label(p, "GPU —", x, S(366), w, S(18), fontNormal, textMain);
-            hStatus2 = Label(p, "守护进程：检测中…", x, S(386), w, S(18), fontNormal, textMain);
-            hPath = Label(p, "", x, S(406), w, S(16), fontNormal, textSub);
+            Label(p, "功耗墙", x, S(350), S(120), S(20), fontBold, textMain);
+            hPowerVal = Label(p, "310 W", S(156), S(344), S(160), S(28), fontValue, textAccent);
+            hPower = Trackbar(p, ID_TB_POWER, x, S(374), w, 100, 330);
+            Label(p, "这是真正决定能否守住低转速的旋钮：40% 上限建议 150 W（实测 150W 时风扇全程不被驱动力拉满）",
+                x, S(408), w, S(18), fontNormal, textSub);
 
-            Button(p, "应用", ID_APPLY, x, S(436), S(100));
-            Button(p, "恢复默认", ID_RESET, S(136), S(436), S(100));
-            Button(p, "关闭", ID_CLOSE, S(248), S(436), S(100));
+            hStatus1 = Label(p, "GPU —", x, S(444), w, S(18), fontNormal, textMain);
+            hStatus2 = Label(p, "守护进程：检测中…", x, S(464), w, S(18), fontNormal, textMain);
+            hPath = Label(p, "", x, S(484), w, S(16), fontNormal, textSub);
+
+            Button(p, "应用", ID_APPLY, x, S(516), S(100));
+            Button(p, "恢复默认", ID_RESET, S(136), S(516), S(100));
+            Button(p, "关闭", ID_CLOSE, S(248), S(516), S(100));
         }
 
         private static IntPtr WndProc(IntPtr hWnd, uint msg, IntPtr wParam, IntPtr lParam)
@@ -246,6 +253,7 @@ namespace NvidiaFanCap
             SendMessageW(hPreempt, TBM_SETPOS, (IntPtr)1, (IntPtr)settings.Preempt);
             SendMessageW(hValve, TBM_SETPOS, (IntPtr)1, (IntPtr)settings.Valve);
             SendMessageW(hChk, BM_SETCHECK, (IntPtr)(settings.ValveEnabled ? BST_CHECKED : BST_UNCHECKED), IntPtr.Zero);
+            SendMessageW(hPower, TBM_SETPOS, (IntPtr)1, (IntPtr)(settings.PowerLimitW > 0 ? settings.PowerLimitW : 310));
             UpdateValueLabels();
         }
 
@@ -255,6 +263,7 @@ namespace NvidiaFanCap
             SetWindowTextW(hCapVal, Pos(hCap) + " %");
             SetWindowTextW(hPreemptVal, Pos(hPreempt) + " °C");
             SetWindowTextW(hValveVal, Pos(hValve) + " °C");
+            SetWindowTextW(hPowerVal, Power() + " W");
         }
 
         private static void Apply()
@@ -266,6 +275,7 @@ namespace NvidiaFanCap
                 s.Preempt = Pos(hPreempt);
                 s.Valve = Pos(hValve);
                 s.ValveEnabled = SendMessageW(hChk, BM_GETCHECK, IntPtr.Zero, IntPtr.Zero).ToInt32() == BST_CHECKED;
+                s.PowerLimitW = Power();
                 string used = Settings.SaveSmart(s, iniPath);
                 iniPath = used;
                 settings = s;
@@ -287,6 +297,7 @@ namespace NvidiaFanCap
                 SendMessageW(hPreempt, TBM_SETPOS, (IntPtr)1, (IntPtr)75);
                 SendMessageW(hValve, TBM_SETPOS, (IntPtr)1, (IntPtr)90);
                 SendMessageW(hChk, BM_SETCHECK, (IntPtr)BST_CHECKED, IntPtr.Zero);
+                SendMessageW(hPower, TBM_SETPOS, (IntPtr)1, (IntPtr)310);
                 UpdateValueLabels();
                 loading = false;
             }
@@ -347,6 +358,13 @@ namespace NvidiaFanCap
         private static int S(int v) { return (int)(v * DpiScale() + 0.5); }
         private static int RGB(byte r, byte g, byte b) { return r | (g << 8) | (b << 16); }
         private static int Pos(IntPtr trackbar) { return (int)SendMessageW(trackbar, TBM_GETPOS, IntPtr.Zero, IntPtr.Zero).ToInt64(); }
+
+        /// <summary>Power limit slider value, rounded to 10 W steps.</summary>
+        private static int Power()
+        {
+            if (hPower == IntPtr.Zero) return 310;
+            return ((Pos(hPower) + 5) / 10) * 10;
+        }
         private static string ShortPath(string path)
         {
             try { return path.Length > 60 ? "..." + path.Substring(path.Length - 57) : path; } catch { return path; }

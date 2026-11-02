@@ -120,16 +120,9 @@ namespace NvidiaFanCap
 
                 DateTime iniStamp = File.Exists(iniPath) ? File.GetLastWriteTimeUtc(iniPath) : DateTime.MinValue;
                 Settings cfg = Merge(Settings.Load(iniPath), cli, cliMode, cliValveEnabled);
+                int appliedPowerLimit = 0;
 
-                if (cfg.PowerLimitW > 0)
-                {
-                    uint current, defaultValue;
-                    Nvml.GetPowerLimit(device, out current);
-                    Nvml.GetPowerDefaultLimit(device, out defaultValue);
-                    int prc = Nvml.SetPowerLimit(device, (uint)(cfg.PowerLimitW * 1000));
-                    Log("power limit: " + (current / 1000) + "W (default " + (defaultValue / 1000) + "W) -> " +
-                        cfg.PowerLimitW + "W  " + Nvml.Describe(prc));
-                }
+                if (cfg.PowerLimitW > 0) ApplyPowerLimit(device, cfg.PowerLimitW, ref appliedPowerLimit);
 
                 Log(string.Format("mode={0} cap={1}% preempt>={2}C release<={3}C valve>={4}C(arm<={5}C){6}",
                     cfg.Mode, cfg.Cap, cfg.Preempt, cfg.Release, cfg.Valve, cfg.ValveReenable,
@@ -140,6 +133,7 @@ namespace NvidiaFanCap
                 var held = new SortedSet<int>();
                 bool valveOpen = false;
                 int writeErrors = 0;
+                DateTime nextBurstLog = DateTime.MinValue;
                 DateTime started = DateTime.Now;
                 DateTime nextConfigCheck = DateTime.UtcNow.AddSeconds(5);
 
@@ -159,7 +153,9 @@ namespace NvidiaFanCap
                             iniStamp = stamp;
                             cfg = Merge(Settings.Load(current), cli, cliMode, cliValveEnabled);
                             Log("settings reloaded: cap=" + cfg.Cap + "% preempt=" + cfg.Preempt + "C valve=" +
-                                cfg.Valve + "C(" + (cfg.ValveEnabled ? "on" : "off") + ") [" + current + "]");
+                                cfg.Valve + "C(" + (cfg.ValveEnabled ? "on" : "off") + ") power=" +
+                                (cfg.PowerLimitW > 0 ? cfg.PowerLimitW + "W" : "off") + " [" + current + "]");
+                            if (cfg.PowerLimitW != appliedPowerLimit) ApplyPowerLimit(device, cfg.PowerLimitW, ref appliedPowerLimit);
                         }
                     }
 
@@ -204,6 +200,7 @@ namespace NvidiaFanCap
                                 if (!Engage(device, held)) { held.Clear(); writeErrors++; }
                             }
                             if (held.Count > 0 && !WriteCap(device, held, cfg.Cap)) writeErrors++;
+                            if (held.Count > 0) EnsureManual(device, held);
                         }
                         else // cap mode
                         {
@@ -234,7 +231,21 @@ namespace NvidiaFanCap
                                     Log("released to auto at " + temp + "C (fan " + maxSpeed + "%)");
                                     held.Clear();
                                 }
-                                else if (!WriteCap(device, held, cfg.Cap)) writeErrors++;
+                                else
+                                {
+                                    // The driver revokes manual fan policy when its thermal
+                                    // protection kicks in (seen above ~84C on a 4070 Ti
+                                    // Super) and forces the fan up. Reclaim the policy on
+                                    // every tick instead of only writing the speed.
+                                    EnsureManual(device, held);
+                                    if (!WriteCap(device, held, cfg.Cap)) writeErrors++;
+                                    if (maxSpeed > cfg.Cap + 20 && DateTime.UtcNow >= nextBurstLog)
+                                    {
+                                        nextBurstLog = DateTime.UtcNow.AddSeconds(20);
+                                        Log("driver override: fan " + maxSpeed + "% while holding " + cfg.Cap +
+                                            "% at " + temp + "C (thermal protection is fighting the ceiling)");
+                                    }
+                                }
                             }
                         }
                     }
@@ -297,6 +308,28 @@ namespace NvidiaFanCap
                 if (rc != Nvml.SUCCESS) { Log("SetFanControlPolicy(manual) fan" + f + ": " + Nvml.Describe(rc)); return false; }
             }
             return true;
+        }
+
+        private static void EnsureManual(IntPtr device, SortedSet<int> fans)
+        {
+            foreach (int f in fans) Nvml.SetFanControlPolicy(device, (uint)f, Nvml.POLICY_MANUAL);
+        }
+
+        /// <summary>
+        /// Power ceiling is the lever that decides whether a low fan cap can be
+        /// sustained: on a blower 4070 Ti Super the driver forces the fan to 100%
+        /// way above ~84C, and only a lower power limit keeps the card below that.
+        /// </summary>
+        private static void ApplyPowerLimit(IntPtr device, int watts, ref int applied)
+        {
+            if (watts <= 0) { applied = 0; return; }
+            uint now, defaultValue;
+            Nvml.GetPowerLimit(device, out now);
+            Nvml.GetPowerDefaultLimit(device, out defaultValue);
+            int rc = Nvml.SetPowerLimit(device, (uint)(watts * 1000));
+            Log("power limit: " + (now / 1000) + "W (default " + (defaultValue / 1000) + "W) -> " +
+                watts + "W  " + Nvml.Describe(rc));
+            applied = watts;
         }
 
         private static bool WriteCap(IntPtr device, SortedSet<int> fans, int cap)

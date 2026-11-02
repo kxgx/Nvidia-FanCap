@@ -10,7 +10,7 @@
 <Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
   <Package Name="Nvidia-FanCap"
            Manufacturer="Nvidia-FanCap"
-           Version="1.0.5"
+           Version="1.0.6"
            UpgradeCode="6F2A9C7E-1D4B-4A83-9E5C-2B7F0A3D8C11"
            Scope="perMachine"
            Language="2052"
@@ -23,13 +23,13 @@
     <StandardDirectory Id="ProgramFiles64Folder">
       <Directory Id="INSTALLFOLDER" Name="Nvidia-FanCap">
         <Component Id="ExeComponent">
-          <File Id="ExeFile" Source="dist\Nvidia-FanCap-x64.exe" KeyPath="yes" DefaultVersion="1.0.5.0" />
+          <File Id="ExeFile" Source="dist\Nvidia-FanCap-x64.exe" KeyPath="yes" DefaultVersion="1.0.6.0" />
         </Component>
         <Component Id="IniComponent">
-          <File Id="IniFile" Source="dist\Nvidia-FanCap.ini" DefaultVersion="1.0.5.0" />
+          <File Id="IniFile" Source="dist\Nvidia-FanCap.ini" DefaultVersion="1.0.6.0" />
         </Component>
         <Component Id="TaskXmlComponent">
-          <File Id="TaskXml" Source="task.xml" DefaultVersion="1.0.5.0" />
+          <File Id="TaskXml" Source="task.xml" DefaultVersion="1.0.6.0" />
         </Component>
       </Directory>
     </StandardDirectory>
@@ -79,3 +79,4 @@
 
   </Package>
 </Wix>
+
