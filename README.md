@@ -105,15 +105,36 @@ To confirm the core promise, pin the fan to a fixed speed (e.g. 60% with
 Use "Nvidia-FanCap" in Settings → Apps, or run `uninstall-task.bat` for the
 portable install. Fan control returns to the driver/vBIOS immediately.
 
+## Why a fan ceiling alone is not enough (measured)
+
+On a cross-flashed blower RTX 4070 Ti SUPER (310 W card, 97 % load):
+
+| power limit | GPU temp at 40 % fan | fan forced to 100 % |
+| --- | --- | --- |
+| 220 W | 81-86 °C | 12 / 35 samples |
+| 180 W | 79-85 °C | 2 / 35 samples |
+| **150 W** | **79-84 °C** | **0** |
+| 120 W | 79-85 °C | 0 |
+
+The ceiling itself holds (40 % stays at 40 % for minutes), but once the GPU
+passes roughly 84-86 °C the driver revokes manual fan control and forces the fan
+to 100 % in bursts. The NVML GPU temperature threshold is read-only on this
+board, so the only lever is heat: **set the power limit to ~150 W** (two clicks
+in the GUI) and the ceiling holds continuously.
+
 ## Safety
 
 - The daemon needs administrator rights (NVML manual fan control is a
   privileged operation); the scheduled task runs elevated without a UAC prompt.
 - Do not run MSI Afterburner / FanControl GPU fan control at the same time -
-  they will fight over the fan. Motherboard fans are fine.
+  they will fight over the fan and the result depends on who writes last.
+  Motherboard fans are fine.
 - The GPU memory (GDDR6X) and VRM are cooled by the same fan: after lowering the
   ceiling, check memory temperature and hot spot in GPU-Z occasionally (keep
   them below ~95 °C). The safety valve is on by default.
+- No software can remove the driver's thermal protection: if you want a hard
+  ceiling above ~84 °C regardless of temperature, the blower fan has to be
+  rewired to a motherboard header (hardware modification).
 
 ---
 
