@@ -94,11 +94,11 @@ jobs:
       - name: 安装 WiX 并构建 MSI
         shell: pwsh
         run: |
-          # WiX v6 是无需接受 OSMF EULA 的最新版本；若升级到 v7，需自行确认协议后
-          # 在下方命令加 -acceptEula wix7（见 https://docs.firegiant.com/wix/osmf/）
-          dotnet tool install --tool-path .tools wix --version 6.0.2
+          # WiX v7：EULA 接受标记（OSMF 费用仅对年收入 >1 万美元的组织生效，
+          # 本项目为非盈利开源项目，接受标记后无额外义务）
+          dotnet tool install --tool-path .tools wix --version 7.0.1
           $ver = (Select-String -Path Product.wxs -Pattern 'Version="([\d.]+)"' | Select-Object -First 1).Matches[0].Groups[1].Value
-          & .tools\wix.exe build -arch x64 Product.wxs -o "dist/Nvidia-FanCap-$ver-x64.msi"
+          & .tools\wix.exe build -acceptEula wix7 -arch x64 Product.wxs -o "dist/Nvidia-FanCap-$ver-x64.msi"
       - name: 打包绿色版 zip
         shell: pwsh
         run: |
