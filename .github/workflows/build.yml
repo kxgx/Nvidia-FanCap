@@ -37,19 +37,29 @@ jobs:
       - name: 0. 检测代码变更（非代码变更时编译按需跳过）
         id: codechange
         run: |
-          BASE=main
-          if [ "${{ github.event_name }}" = "pull_request" ]; then BASE="${{ github.base_ref }}"; fi
-          git fetch --no-tags origin "$BASE" 2>/dev/null || true
-          if ! git rev-parse --verify "origin/$BASE" >/dev/null 2>&1; then
-            # 无法确定基线时按代码变更处理（宁可编译，不可漏编译）
-            echo "code=true" >> "$GITHUB_OUTPUT"
-          elif git diff --name-only "origin/$BASE...HEAD" -- . \
-            ':(exclude)*.md' ':(exclude)**/*.md' ':(exclude).github/**' \
-            ':(exclude).gitignore' ':(exclude)LICENSE' > /tmp/changed.txt 2>/dev/null; then
-            if [ -s /tmp/changed.txt ]; then echo "code=true" >> "$GITHUB_OUTPUT"; else echo "code=false" >> "$GITHUB_OUTPUT"; fi
-          else
-            echo "code=true" >> "$GITHUB_OUTPUT"
+          # 按事件取基线：PR 对比目标分支，push 对比推送前的提交
+          # （push 到 main 时若对比 origin/main...HEAD 会永远判为“无变更”，编译会被跳过）
+          EVENT="${{ github.event_name }}"
+          SHOULD=true
+          if [ "$EVENT" = "pull_request" ]; then
+            BASE="${{ github.base_ref }}"
+            git fetch --no-tags origin "$BASE" 2>/dev/null || true
+            if git rev-parse --verify "origin/$BASE" >/dev/null 2>&1; then
+              if ! git diff --name-only "origin/$BASE...HEAD" -- . \
+                ':(exclude)*.md' ':(exclude)**/*.md' ':(exclude).github/**' \
+                ':(exclude).gitignore' ':(exclude)LICENSE' | grep -q .; then SHOULD=false; fi
+            fi
+          elif [ "$EVENT" = "push" ]; then
+            BASE="${{ github.event.before }}"
+            if [ -n "$BASE" ] && [ "$BASE" != "0000000000000000000000000000000000000000" ] \
+               && git rev-parse --verify "$BASE^{commit}" >/dev/null 2>&1; then
+              if ! git diff --name-only "$BASE" HEAD -- . \
+                ':(exclude)*.md' ':(exclude)**/*.md' ':(exclude).github/**' \
+                ':(exclude).gitignore' ':(exclude)LICENSE' | grep -q .; then SHOULD=false; fi
+            fi
           fi
+          echo "code=$SHOULD" >> "$GITHUB_OUTPUT"
+          echo "检测结果: code=$SHOULD"
       - name: 1. 检查仓库中没有构建脚本（构建统一由本工作流完成）
         run: |
           if find . -path ./.git -prune -o \( -name '*.bat' -o -name '*.cmd' \) -print | grep -q .; then
