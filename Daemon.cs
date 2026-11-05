@@ -31,6 +31,12 @@ namespace NvidiaFanCap
         private const int POWER_MIN = 50;             // never command an absurdly low limit
         private const int POWER_MAX_FALLBACK = 330;   // only used when the card reports no default limit
 
+        // auto mode tuning - both sensitivities were measured on the blower
+        // 4070 Ti SUPER (fan 4.5 %/C, board power 0.035 C/W)
+        private const double FAN_PER_DEGREE = 4.5;
+        private const double DEG_PER_WATT = 0.035;
+        private const double ANCHOR_DAMPING = 0.30;
+
         private static TextWriter logFile;
         private static volatile bool running = true;
 
@@ -140,10 +146,20 @@ namespace NvidiaFanCap
                 int appliedPowerLimit = 0;
                 int defaultPowerW = ReadDefaultPowerLimit(device);
 
-                bool curveMode = IsCurve(cfg);
-                Curve fanCurve = curveMode ? BuildFanCurve(cfg) : null;
-                Curve powerCurve = curveMode ? BuildPowerCurve(cfg) : null;
-                if (curveMode && (fanCurve == null || powerCurve == null))
+                bool autoMode = string.Equals(cfg.Mode, "auto", StringComparison.OrdinalIgnoreCase);
+                bool curveMode = IsCurve(cfg) || autoMode;
+                ThermalModel autoModel = autoMode ? (ThermalModel.TryLoad(ModelStatePath()) ?? new ThermalModel()) : null;
+                Curve fanCurve = null;
+                Curve powerCurve = null;
+                Curve defaultFanCurve = Curve.Build(Settings.DefaultCurveTemp, Settings.DefaultCurveFan);
+                if (autoMode) fanCurve = defaultFanCurve;   // anchor learned while running
+                else if (curveMode) { fanCurve = BuildFanCurve(cfg); powerCurve = BuildPowerCurve(cfg); }
+                if (curveMode && fanCurve == null)
+                {
+                    Log("curve: invalid curve settings, falling back to cap mode");
+                    curveMode = false;
+                }
+                if (curveMode && !autoMode && powerCurve == null)
                 {
                     Log("curve: invalid curve settings, falling back to cap mode");
                     curveMode = false;
@@ -160,12 +176,23 @@ namespace NvidiaFanCap
                 DateTime nextCurveLog = DateTime.MinValue;
                 DateTime nextCurveDrift = DateTime.UtcNow.AddSeconds(5);
 
-                if (!curveMode && cfg.PowerLimitW > 0) ApplyPowerLimit(device, cfg.PowerLimitW, ref appliedPowerLimit);
+                // auto mode state: steady-state window + learned thermal model
+                var steadyWin = new Queue<double[]>();
+                DateTime nextAutoTick = DateTime.UtcNow;
+                DateTime lastModelSample = DateTime.MinValue;
+                DateTime nextModelUpdate = DateTime.UtcNow.AddSeconds(5);
+                DateTime nextModelSave = DateTime.UtcNow.AddSeconds(300);
+                double autoAnchor = autoModel != null && autoModel.Anchor > 0 ? autoModel.Anchor : -1;   // fan % at target, -1 = not learned yet
+
+                if ((!curveMode || autoMode) && cfg.PowerLimitW > 0) ApplyPowerLimit(device, cfg.PowerLimitW, ref appliedPowerLimit);
 
                 Log(string.Format("mode={0} cap={1}% preempt>={2}C release<={3}C valve>={4}C(arm<={5}C){6}",
                     cfg.Mode, cfg.Cap, cfg.Preempt, cfg.Release, cfg.Valve, cfg.ValveReenable,
                     cfg.ValveEnabled ? "" : " VALVE=OFF"));
                 if (curveMode) LogCurveSetup(cfg, defaultPowerW);
+                if (autoMode) Log("auto: fitting the fan curve from the power limit (" +
+                    (cfg.PowerLimitW > 0 ? cfg.PowerLimitW + "W" : "card default") + ") toward " +
+                    cfg.TargetTemp + "C  " + autoModel.Format());
 
                 Console.CancelKeyPress += delegate (object sender, ConsoleCancelEventArgs e) { e.Cancel = true; running = false; };
 
@@ -194,12 +221,16 @@ namespace NvidiaFanCap
                             bool wasCurve = curveMode;
                             cfg = Merge(Settings.Load(current), cli, cliMode, cliValveEnabled);
                             cfg.NormalizeCurves();
-                            curveMode = IsCurve(cfg);
+                            bool newAuto = string.Equals(cfg.Mode, "auto", StringComparison.OrdinalIgnoreCase);
+                            if (newAuto && autoModel == null) autoModel = ThermalModel.TryLoad(ModelStatePath()) ?? new ThermalModel();
+                            if (!newAuto) autoModel = null;
+                            autoMode = newAuto;
+                            curveMode = IsCurve(cfg) || autoMode;
                             if (curveMode)
                             {
-                                fanCurve = BuildFanCurve(cfg);
-                                powerCurve = BuildPowerCurve(cfg);
-                                if (fanCurve == null || powerCurve == null)
+                                if (autoMode) fanCurve = autoAnchor >= 0 ? BuildAnchorCurve(cfg.TargetTemp, autoAnchor, FAN_PER_DEGREE) : defaultFanCurve;
+                                else { fanCurve = BuildFanCurve(cfg); powerCurve = BuildPowerCurve(cfg); }
+                                if (fanCurve == null || (!autoMode && powerCurve == null))
                                 {
                                     Log("curve: invalid curve settings, falling back to cap mode");
                                     curveMode = false;
@@ -225,6 +256,12 @@ namespace NvidiaFanCap
                                 }
                                 nextCurveDrift = DateTime.UtcNow.AddSeconds(5);
                                 curvePowerDisabled = false;   // settings changed: retry the power curve
+                                if (autoMode)
+                                {
+                                    // auto mode keeps the power limit as a static input
+                                    if (cfg.PowerLimitW != appliedPowerLimit) ApplyPowerLimit(device, cfg.PowerLimitW, ref appliedPowerLimit);
+                                    else ReassertPowerLimit(device, cfg.PowerLimitW, ref appliedPowerLimit);
+                                }
                             }
                             else
                             {
@@ -243,10 +280,11 @@ namespace NvidiaFanCap
                                 else ReassertPowerLimit(device, cfg.PowerLimitW, ref appliedPowerLimit);
                             }
                         }
-                        else if (!curveMode && DateTime.UtcNow >= nextDriftCheck)
+                        else if ((!curveMode || autoMode) && DateTime.UtcNow >= nextDriftCheck)
                         {
                             // another app (or a driver reload) can silently change the
-                            // power limit; keep ours in place
+                            // power limit; keep ours in place (auto mode uses a static
+                            // power limit as the input for the fitted curve)
                             nextDriftCheck = DateTime.UtcNow.AddSeconds(5);
                             ReassertPowerLimit(device, cfg.PowerLimitW, ref appliedPowerLimit);
                         }
@@ -285,6 +323,83 @@ namespace NvidiaFanCap
                                     curvePower = actual;
                                 }
                             }
+                        }
+                    }
+
+                    // auto mode: learn the thermal response from steady states and
+                    // re-derive the fan curve from the power limit the user chose.
+                    // "Steady" is judged on a 24 s window (the fan is allowed to
+                    // micro-adjust, which it always does) - a point is usable only
+                    // when fan, temperature and power all stayed inside a narrow band.
+                    if (autoMode && autoModel != null)
+                    {
+                        double powerW = Nvml.ReadPowerWatts(device);
+                        if (DateTime.UtcNow >= nextAutoTick)
+                        {
+                            nextAutoTick = DateTime.UtcNow.AddSeconds(1);
+                            steadyWin.Enqueue(new double[] { NowSecs(), powerW, maxSpeed, temp });
+                            double cutoff = NowSecs() - 40.0;   // thermal time constant is ~30 s
+                            while (steadyWin.Count > 0 && steadyWin.Peek()[0] < cutoff) steadyWin.Dequeue();
+
+                            if (steadyWin.Count >= 20 && DateTime.UtcNow - lastModelSample >= TimeSpan.FromSeconds(25))
+                            {
+                                double pmin = double.MaxValue, pmax = double.MinValue;
+                                double fmin = double.MaxValue, fmax = double.MinValue;
+                                double tmin = double.MaxValue, tmax = double.MinValue;
+                                double psum = 0, fsum = 0, tsum = 0;
+                                int n = steadyWin.Count;
+                                foreach (double[] s in steadyWin)
+                                {
+                                    if (s[1] < pmin) pmin = s[1]; if (s[1] > pmax) pmax = s[1];
+                                    if (s[2] < fmin) fmin = s[2]; if (s[2] > fmax) fmax = s[2];
+                                    if (s[3] < tmin) tmin = s[3]; if (s[3] > tmax) tmax = s[3];
+                                    psum += s[1]; fsum += s[2]; tsum += s[3];
+                                }
+                                if (pmax - pmin <= 20 && fmax - fmin <= 5 && tmax - tmin <= 2.0 &&
+                                    curveFanOut >= 0 && Math.Abs(maxSpeed - curveFanOut) <= 8)
+                                {
+                                    // the last two clauses reject windows during a driver
+                                    // override: there the fan is not ours, so the point
+                                    // would teach the model nonsense
+                                    autoModel.Add(psum / n, fsum / n, tsum / n);
+                                    lastModelSample = DateTime.UtcNow;
+                                    Log("auto: learned " + autoModel.Format() + " -> anchor " +
+                                        Fmt1(autoModel.AnchorFan(cfg.TargetTemp, AnchorPower(cfg, defaultPowerW, psum / n))) +
+                                        "% at " + cfg.TargetTemp + "C (slope " + Fmt1(autoModel.Slope) + "%/C)");
+                                }
+                            }
+                        }
+                        if (DateTime.UtcNow >= nextModelUpdate)
+                        {
+                            nextModelUpdate = DateTime.UtcNow.AddSeconds(15);
+                            // Damped anchor update from the last reliable steady point.
+                            // Only two card constants are needed, and both were measured:
+                            // 4.5 % fan per degree C, 0.035 C per watt. Damping keeps a
+                            // transient observation from slamming the curve around.
+                            double p0, f0, t0;
+                            if (autoModel.TryGetLast(out p0, out f0, out t0) && curveFanOut >= 0 && Math.Abs(maxSpeed - curveFanOut) <= 8)
+                            {
+                                double anchorPower = AnchorPower(cfg, defaultPowerW, powerW);
+                                double desired = f0 + (t0 - cfg.TargetTemp) * FAN_PER_DEGREE
+                                                 - (anchorPower - p0) * DEG_PER_WATT * FAN_PER_DEGREE;
+                                if (autoAnchor < 0) autoAnchor = desired;
+                                else autoAnchor += ANCHOR_DAMPING * (desired - autoAnchor);
+                                if (autoAnchor < 0) autoAnchor = 0; else if (autoAnchor > 100) autoAnchor = 100;
+                                autoModel.Anchor = autoAnchor;
+                                fanCurve = BuildAnchorCurve(cfg.TargetTemp, autoAnchor, FAN_PER_DEGREE);
+                                Log("auto: point T=" + Fmt1(t0) + "C F=" + Fmt1(f0) + "% P=" + Fmt1(p0) + "W -> want " +
+                                    Fmt1(desired) + "% at " + cfg.TargetTemp + "C, anchor " + Fmt1(autoAnchor) +
+                                    "% (limit " + Fmt1(AnchorPower(cfg, defaultPowerW, powerW)) + "W)");
+                            }
+                            else if (autoAnchor < 0)
+                            {
+                                fanCurve = defaultFanCurve;   // no reliable point yet
+                            }
+                        }
+                        if (DateTime.UtcNow >= nextModelSave)
+                        {
+                            nextModelSave = DateTime.UtcNow.AddSeconds(300);
+                            autoModel.Save(ModelStatePath());
                         }
                     }
 
@@ -371,7 +486,7 @@ namespace NvidiaFanCap
                             // power limit from the power curve: down immediately,
                             // up at most POWER_STEP_UP watts per tick. A card that
                             // rejects power-limit writes keeps the fan curve only.
-                            if (curvePower < 0 && !curvePowerDisabled)
+                            if (curvePower < 0 && !curvePowerDisabled && !autoMode)
                             {
                                 uint currentMw;
                                 if (Nvml.GetPowerLimit(device, out currentMw) != Nvml.SUCCESS)
@@ -381,7 +496,7 @@ namespace NvidiaFanCap
                                 }
                                 else curvePower = (int)(currentMw / 1000);
                             }
-                            if (!curvePowerDisabled)
+                            if (!autoMode && !curvePowerDisabled)
                             {
                                 double targetW = powerCurve.Evaluate(emaTemp);
                                 double maxW = defaultPowerW > 0 ? defaultPowerW : POWER_MAX_FALLBACK;
@@ -532,6 +647,7 @@ namespace NvidiaFanCap
                     RestorePowerDefault(device);
                     Log("restored the default power limit on exit");
                 }
+                if (autoMode && autoModel != null) autoModel.Save(ModelStatePath());
                 return 0;
             }
             finally
@@ -680,6 +796,49 @@ namespace NvidiaFanCap
             Nvml.GetPowerLimit(device, out current);
             int rc = Nvml.SetPowerLimit(device, defaultValue);
             Log("power limit: " + (current / 1000) + "W -> default " + (defaultValue / 1000) + "W  " + Nvml.Describe(rc));
+        }
+
+        /// <summary>
+        /// Power the fitted fan curve is anchored at: the configured limit when the
+        /// user set one, otherwise the measured steady draw (so a card that never
+        /// reaches its limit still gets a correct anchor).
+        /// </summary>
+        private static double AnchorPower(Settings cfg, int defaultPowerW, double measured)
+        {
+            double fallback = defaultPowerW > 0 ? defaultPowerW : 330;
+            if (measured > 50) return Math.Min(measured, cfg.PowerLimitW > 0 ? cfg.PowerLimitW : fallback);
+            if (cfg.PowerLimitW > 0) return cfg.PowerLimitW;
+            return fallback;
+        }
+
+        /// <summary>
+        /// Three-knot fan curve through (targetTemp, anchorFan) with the measured
+        /// slope: flat zero far below the knee (0-RPM idle), the anchor at the
+        /// target temperature, saturated above the driver override zone.
+        /// </summary>
+        private static Curve BuildAnchorCurve(double targetTemp, double anchorFan, double fanPerDegree)
+        {
+            double[] xs = new double[] { targetTemp - 40, targetTemp, targetTemp + 20 };
+            double[] ys = new double[] { anchorFan - 40 * fanPerDegree, anchorFan, anchorFan + 20 * fanPerDegree };
+            for (int i = 0; i < ys.Length; i++)
+            {
+                if (ys[i] < 0) ys[i] = 0; else if (ys[i] > 100) ys[i] = 100;
+            }
+            if (ys[0] > ys[1]) ys[0] = ys[1];
+            if (ys[2] < ys[1]) ys[2] = ys[1];
+            return Curve.Build(xs, ys);
+        }
+
+        private static double NowSecs()
+        {
+            return DateTime.UtcNow.Ticks / 1e7;   // monotonic enough for a 24 s window
+        }
+
+        /// <summary>Learned thermal model lives next to the per-user settings.</summary>
+        private static string ModelStatePath()
+        {
+            string dir = Path.GetDirectoryName(Settings.OverridePath());
+            return Path.Combine(dir ?? Path.GetTempPath(), "model.txt");
         }
 
         private static bool WriteCap(IntPtr device, SortedSet<int> fans, int cap)

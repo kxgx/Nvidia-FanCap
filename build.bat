@@ -19,7 +19,14 @@ if errorlevel 1 ( echo BUILD FAILED & exit /b 1 )
 echo.
 echo Done:
 echo   dist\Nvidia-FanCap-x64.exe        2 MB single file - double click for the GUI
-echo   dist\Nvidia-FanCap-1.0.19-x64.msi  installer - registers hidden autostart
+echo   dist\Nvidia-FanCap-1.0.26-x64.msi  installer - registers hidden autostart
+
+
+
+
+
+
+
 
 
 

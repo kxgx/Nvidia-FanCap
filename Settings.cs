@@ -102,6 +102,7 @@ namespace NvidiaFanCap
         public double[] PowerCurveTemp = (double[])DefaultPowerCurveTemp.Clone();// power-limit curve knots (C)
         public double[] PowerCurveWatt = (double[])DefaultPowerCurveWatt.Clone();// watts at each knot
         public double TempEma = 0.25;        // temperature EMA: lower = smoother/slower
+        public int TargetTemp = 78;          // auto mode: temperature the fitted curve aims at
         public double FanRateUp = 2.0;       // max fan increase per tick (percent)
         public double FanRateDown = 1.0;     // max fan decrease per tick (percent)
 
@@ -131,6 +132,7 @@ namespace NvidiaFanCap
             {
                 case "cap": Cap = Num(value, Cap); break;
                 case "mode": Mode = value.ToLowerInvariant(); break;
+                case "target_temp": TargetTemp = Num(value, TargetTemp); break;
                 case "interval": Interval = Num(value, Interval); break;
                 case "preempt": Preempt = Num(value, Preempt); break;
                 case "release": Release = Num(value, Release); break;
@@ -169,6 +171,7 @@ namespace NvidiaFanCap
                 PowerCurveWatt = (double[])DefaultPowerCurveWatt.Clone();
             }
             TempEma = Clamp(TempEma, 0.05, 1.0);
+            TargetTemp = (int)Clamp(TargetTemp, 60, 84);
             FanRateUp = Clamp(FanRateUp, 0.1, 50.0);
             FanRateDown = Clamp(FanRateDown, 0.1, 50.0);
         }
@@ -226,6 +229,7 @@ namespace NvidiaFanCap
             sb.AppendLine("curve_temp=" + Curve.Format(CurveTemp));
             sb.AppendLine("curve_fan=" + Curve.Format(CurveFan));
             sb.AppendLine("temp_ema=" + NumOut(TempEma));
+            sb.AppendLine("target_temp=" + TargetTemp);
             sb.AppendLine("fan_rate_up=" + NumOut(FanRateUp));
             sb.AppendLine("fan_rate_down=" + NumOut(FanRateDown));
             sb.AppendLine("power_curve_temp=" + Curve.Format(PowerCurveTemp));

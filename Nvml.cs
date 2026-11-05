@@ -44,6 +44,8 @@ namespace NvidiaFanCap
         internal static extern int SetDefaultFanSpeed(IntPtr device, uint fan);
         [DllImport(Dll, EntryPoint = "nvmlDeviceGetPowerManagementLimit")]
         internal static extern int GetPowerLimit(IntPtr device, out uint milliwatts);
+        [DllImport(Dll, EntryPoint = "nvmlDeviceGetPowerUsage")]
+        internal static extern int GetPowerUsage(IntPtr device, out uint milliwatts);
         [DllImport(Dll, EntryPoint = "nvmlDeviceGetPowerManagementDefaultLimit")]
         internal static extern int GetPowerDefaultLimit(IntPtr device, out uint milliwatts);
         [DllImport(Dll, EntryPoint = "nvmlDeviceSetPowerManagementLimit")]
@@ -73,6 +75,13 @@ namespace NvidiaFanCap
         {
             uint value;
             return GetTemperature(device, 0, out value) == SUCCESS ? value : 0;
+        }
+
+        /// <summary>Instantaneous board power draw in watts (0 when unavailable).</summary>
+        internal static double ReadPowerWatts(IntPtr device)
+        {
+            uint milliwatts;
+            return GetPowerUsage(device, out milliwatts) == SUCCESS ? milliwatts / 1000.0 : 0.0;
         }
     }
 }
