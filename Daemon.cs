@@ -152,7 +152,11 @@ namespace NvidiaFanCap
                 Curve fanCurve = null;
                 Curve powerCurve = null;
                 Curve defaultFanCurve = Curve.Build(Settings.DefaultCurveTemp, Settings.DefaultCurveFan);
-                if (autoMode) fanCurve = defaultFanCurve;   // anchor learned while running
+                // an anchor learned in a previous run wins; otherwise seed from the
+                // configured power limit so a high limit starts loud enough to stay
+                // out of the driver override zone (the learner will bring it down)
+                double autoAnchor = autoModel != null && autoModel.Anchor > 0 ? autoModel.Anchor : SeedAnchor(cfg, defaultPowerW);
+                if (autoMode) fanCurve = BuildAnchorCurve(cfg.TargetTemp, autoAnchor, FAN_PER_DEGREE);
                 else if (curveMode) { fanCurve = BuildFanCurve(cfg); powerCurve = BuildPowerCurve(cfg); }
                 if (curveMode && fanCurve == null)
                 {
@@ -182,7 +186,6 @@ namespace NvidiaFanCap
                 DateTime lastModelSample = DateTime.MinValue;
                 DateTime nextModelUpdate = DateTime.UtcNow.AddSeconds(5);
                 DateTime nextModelSave = DateTime.UtcNow.AddSeconds(300);
-                double autoAnchor = autoModel != null && autoModel.Anchor > 0 ? autoModel.Anchor : -1;   // fan % at target, -1 = not learned yet
 
                 if ((!curveMode || autoMode) && cfg.PowerLimitW > 0) ApplyPowerLimit(device, cfg.PowerLimitW, ref appliedPowerLimit);
 
@@ -228,7 +231,7 @@ namespace NvidiaFanCap
                             curveMode = IsCurve(cfg) || autoMode;
                             if (curveMode)
                             {
-                                if (autoMode) fanCurve = autoAnchor >= 0 ? BuildAnchorCurve(cfg.TargetTemp, autoAnchor, FAN_PER_DEGREE) : defaultFanCurve;
+                                if (autoMode) fanCurve = BuildAnchorCurve(cfg.TargetTemp, autoAnchor, FAN_PER_DEGREE);
                                 else { fanCurve = BuildFanCurve(cfg); powerCurve = BuildPowerCurve(cfg); }
                                 if (fanCurve == null || (!autoMode && powerCurve == null))
                                 {
@@ -809,6 +812,19 @@ namespace NvidiaFanCap
             if (measured > 50) return Math.Min(measured, cfg.PowerLimitW > 0 ? cfg.PowerLimitW : fallback);
             if (cfg.PowerLimitW > 0) return cfg.PowerLimitW;
             return fallback;
+        }
+
+        /// <summary>
+        /// Starting anchor for auto mode. Derived from the configured power limit
+        /// with the measured sensitivities so a high limit starts loud enough to
+        /// stay below the driver override zone; the learner then brings it down.
+        /// </summary>
+        private static double SeedAnchor(Settings cfg, int defaultPowerW)
+        {
+            double limit = cfg.PowerLimitW > 0 ? cfg.PowerLimitW : (defaultPowerW > 0 ? defaultPowerW : 310);
+            double anchor = 46 + (limit - 150) * DEG_PER_WATT * FAN_PER_DEGREE;
+            if (anchor < 30) anchor = 30; else if (anchor > 85) anchor = 85;
+            return anchor;
         }
 
         /// <summary>
