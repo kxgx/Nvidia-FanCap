@@ -358,7 +358,7 @@ namespace NvidiaFanCap
                         : curve
                         ? "守护进程：运行中（温度曲线模式，改动约 5 秒生效）"
                         : "守护进程：运行中（上限 " + (settings != null ? settings.Cap : 40) + "%，改动约 5 秒生效）")
-                    : "守护进程：未运行 - 运行 install-task.bat 或安装 MSI 后才会锁死上限");
+                    : "守护进程：未运行 - 安装 MSI 后才会锁死上限（或以管理员身份执行 --install）");
             }
             catch { }
         }

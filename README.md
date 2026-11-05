@@ -53,8 +53,9 @@ protection - see [Limits](#limits-and-safety).
   rights (no UAC prompt)
 - clean uninstall from *Settings -> Apps*
 
-**Portable** - copy the files from `dist\` anywhere and run
-`install-task.bat` as administrator (removes with `uninstall-task.bat`).
+**Portable** - copy the files from `dist\` anywhere, then run
+`Nvidia-FanCap-x64.exe --install` from an elevated prompt (removes with
+`--uninstall`).
 
 Settings are stored next to the executable, or in
 `%LOCALAPPDATA%\Nvidia-FanCap\` when the install directory is not writable
@@ -159,7 +160,7 @@ limit: anchor learned 73.8 -> 78.5 %, 77-82 °C, zero overrides.
 
 | symptom | check |
 | --- | --- |
-| GUI says "daemon not running" | the MSI/task must be installed; run `install-task.bat` (admin) or reinstall |
+| GUI says "daemon not running" | install the MSI, or run `Nvidia-FanCap-x64.exe --install` from an elevated prompt |
 | nothing changes after editing | the daemon re-reads the ini every ~5 s; make sure you edited the file shown in the GUI (`%LOCALAPPDATA%\Nvidia-FanCap\...` when installed) |
 | fan still jumps to 100 % | the driver forces full speed above its thermal threshold; lower the power limit, or use auto mode with a lower `target_temp` |
 | settings do nothing | another program owns the fan - the NVIDIA App (performance/auto-tuning), MSI Afterburner or FanControl; disable their GPU fan control |
@@ -180,21 +181,31 @@ limit: anchor learned 73.8 -> 78.5 %, 77-82 °C, zero overrides.
 
 ## Build from source
 
+The CI workflow (`.github/workflows/build.yml`) does exactly this on every push;
+the same two commands build everything locally:
+
 ```
-build.bat
+# single-file native binary (NativeAOT; needs the MSVC build tools)
+dotnet publish Nvidia-FanCap.csproj -c Release -o dist
+
+# MSI installer (WiX)
+dotnet tool install --global wix --version 6.0.2
+wix build -arch x64 Product.wxs -o dist/Nvidia-FanCap-<version>-x64.msi
 ```
 
 - `Nvidia-FanCap.csproj` - daemon, GUI and installer helper in one project,
   published with **NativeAOT** to a single `Nvidia-FanCap-x64.exe`.
-- `Product.wxs` + `make-installer.bat` - the MSI, built with the
-  [WiX Toolset](https://wixtoolset.org/) (v5, MIT); `build.bat` fetches it into
-  `.tools\` on first run.
-- All paths are relative - the repository can live anywhere.
+- `Product.wxs` - the MSI definition, built with the
+  [WiX Toolset](https://wixtoolset.org/) 6.x.
+- All paths are relative - the repository can live anywhere; there are no build
+  scripts in the repository, the workflow and these two commands are the whole
+  build.
 
 ## Uninstall
 
-Use *Settings -> Apps*, or run `uninstall-task.bat` for the portable install.
-Fan control returns to the driver/vBIOS immediately.
+Use *Settings -> Apps*, or run `Nvidia-FanCap-x64.exe --uninstall` from an
+elevated prompt for a portable install. Fan control returns to the driver/vBIOS
+immediately.
 
 ---
 
@@ -206,8 +217,9 @@ Fan control returns to the driver/vBIOS immediately.
   - `curve` 温度曲线：风扇按温度曲线走，功耗墙按另一条曲线走，带平滑/滞回/限速
   - `auto` 自动拟合：你只调功耗墙和目标温度，程序自己学习并生成风扇曲线
 - **安全机制**：预接管温度（默认 75 °C，赶在 vBIOS 满转前接管）、保险阀（默认 90 °C 放开上限让显卡自保，降温后重新上锁）、退出时交还自动控制
-- **安装**：双击 `dist\` 里的 MSI（装到 Program Files、开始菜单、开机隐藏自启、可从"设置→应用"卸载）；绿色使用则拷贝 `dist\` 后以管理员运行 `install-task.bat`
+- **安装**：双击 `dist\` 里的 MSI（装到 Program Files、开始菜单、开机隐藏自启、可从"设置→应用"卸载）；绿色使用则拷贝 `dist\` 后以管理员运行 `Nvidia-FanCap-x64.exe --install`
 - **改设置**：双击 `Nvidia-FanCap-x64.exe`（原生界面、跟随系统深浅色、无需管理员），约 5 秒热生效；设置文件在安装目录或 `%LOCALAPPDATA%\Nvidia-FanCap\`
 - **自动拟合的两个标定参数**：`fan_per_degree`（每 1 °C 需要多少风扇百分比）和 `deg_per_watt`（每瓦功耗带来多少 °C 温升），默认值来自一块参考卡；换用差别很大的散热器时建议重新标定
 - **注意**：不要同时运行其它显卡风扇控制软件（NVIDIA App 的性能调优、MSI Afterburner、FanControl），否则互相抢控制权；驱动在高温下的强制满转是硬件保护，软件无法消除，降低功耗墙才是根本手段
-- **构建**：`build.bat`（生成单文件 exe + MSI）
+- **构建**：CI（`.github/workflows/build.yml`）与本地两条命令：`dotnet publish Nvidia-FanCap.csproj -c Release -o dist` + `wix build -arch x64 Product.wxs`（仓库内不再有 bat 脚本）
+

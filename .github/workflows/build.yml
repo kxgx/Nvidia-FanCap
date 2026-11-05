@@ -1,0 +1,137 @@
+name: 构建与发布
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+    # 纯 .md 文档变更不触发构建（paths-ignore 对 tag 推送不生效，发布流程不受影响）
+    paths-ignore:
+      - '*.md'
+      - '**/*.md'
+  pull_request:
+    paths-ignore:
+      - '*.md'
+      - '**/*.md'
+  workflow_dispatch:
+
+# 同一分支/PR 的新提交取消旧运行
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+# 最小权限原则：默认只读，发布 job 单独开 write
+permissions:
+  contents: read
+
+jobs:
+
+  checks:
+    runs-on: ubuntu-24.04
+    # 供编译按需跳过：仅 .md/工作流等非代码变更时输出 code=false
+    outputs:
+      code: ${{ steps.codechange.outputs.code }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - name: 0. 检测代码变更（非代码变更时编译按需跳过）
+        id: codechange
+        run: |
+          BASE=main
+          if [ "${{ github.event_name }}" = "pull_request" ]; then BASE="${{ github.base_ref }}"; fi
+          git fetch --no-tags origin "$BASE" 2>/dev/null || true
+          if ! git rev-parse --verify "origin/$BASE" >/dev/null 2>&1; then
+            # 无法确定基线时按代码变更处理（宁可编译，不可漏编译）
+            echo "code=true" >> "$GITHUB_OUTPUT"
+          elif git diff --name-only "origin/$BASE...HEAD" -- . \
+            ':(exclude)*.md' ':(exclude)**/*.md' ':(exclude).github/**' \
+            ':(exclude).gitignore' ':(exclude)LICENSE' > /tmp/changed.txt 2>/dev/null; then
+            if [ -s /tmp/changed.txt ]; then echo "code=true" >> "$GITHUB_OUTPUT"; else echo "code=false" >> "$GITHUB_OUTPUT"; fi
+          else
+            echo "code=true" >> "$GITHUB_OUTPUT"
+          fi
+      - name: 1. 检查仓库中没有构建脚本（构建统一由本工作流完成）
+        run: |
+          if find . -path ./.git -prune -o \( -name '*.bat' -o -name '*.cmd' \) -print | grep -q .; then
+            echo "::error::仓库中不应包含 bat/cmd 构建脚本，构建由 CI 完成"
+            find . -path ./.git -prune -o \( -name '*.bat' -o -name '*.cmd' \) -print
+            exit 1
+          fi
+          echo "OK: 仓库中没有 bat/cmd 脚本"
+      - name: 2. 检查 MSI 版本号与 Product.wxs 一致
+        run: |
+          VER=$(grep -oP 'Version="\K[0-9]+\.[0-9]+\.[0-9]+' Product.wxs | head -1)
+          if [ -z "$VER" ]; then echo "::error::Product.wxs 中找不到版本号"; exit 1; fi
+          echo "MSI 版本: $VER"
+
+  win-x64:
+    name: Windows x64
+    needs: [checks]
+    if: needs.checks.outputs.code == 'true' || startsWith(github.ref, 'refs/tags/')
+    runs-on: windows-2022
+    timeout-minutes: 40
+    permissions:
+      actions: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v5
+      - name: 安装 .NET SDK
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+      - name: 编译（NativeAOT 单文件原生程序）
+        run: dotnet publish Nvidia-FanCap.csproj -c Release -o dist
+      - name: 安装 WiX 并构建 MSI
+        shell: pwsh
+        run: |
+          # WiX v6 是无需接受 OSMF EULA 的最新版本；若升级到 v7，需自行确认协议后
+          # 在下方命令加 -acceptEula wix7（见 https://docs.firegiant.com/wix/osmf/）
+          dotnet tool install --tool-path .tools wix --version 6.0.2
+          $ver = (Select-String -Path Product.wxs -Pattern 'Version="([\d.]+)"' | Select-Object -First 1).Matches[0].Groups[1].Value
+          & .tools\wix.exe build -arch x64 Product.wxs -o "dist/Nvidia-FanCap-$ver-x64.msi"
+      - name: 打包绿色版 zip
+        shell: pwsh
+        run: |
+          Compress-Archive -Path dist/Nvidia-FanCap-x64.exe, dist/Nvidia-FanCap.ini, task.xml `
+            -DestinationPath dist/Nvidia-FanCap-win-x64.zip
+      - name: 上传构件
+        uses: actions/upload-artifact@v6
+        with:
+          name: Nvidia-FanCap-win-x64
+          path: dist/
+
+  release:
+    name: 发布
+    needs: [win-x64]
+    # 发布门禁：仅官方仓库的 tag 触发，PR/master push 一律不发布（防误发布）
+    if: github.repository == 'kxgx/Nvidia-FanCap' && startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      actions: read
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - uses: actions/download-artifact@v7
+        with:
+          pattern: Nvidia-FanCap-**
+          merge-multiple: true
+      - name: 列出构件
+        run: ls -la
+      - name: 生成校验和与变更摘要
+        run: |
+          echo "Build: ${{ github.ref_name }}" > sums.txt
+          sha256sum Nvidia-FanCap-* >> sums.txt
+          CHANGES=$(git log --abbrev=8 --abbrev-commit --pretty=format:" - %s(%h) by %an" -15)
+          { echo "## 最近变更:"; echo "$CHANGES"; } > changelog.txt
+      - name: 创建 GitHub Release
+        uses: softprops/action-gh-release@v3
+        with:
+          files: |
+            Nvidia-FanCap-*
+            sums.txt
+            changelog.txt
+          draft: false
+          prerelease: false
+          make_latest: true

@@ -135,7 +135,7 @@ namespace NvidiaFanCap
                 Nvml.GetFanControlPolicy(device, 0, out policy);
                 if (Nvml.SetFanControlPolicy(device, 0, policy) == Nvml.INSUFFICIENT_PERMISSIONS)
                 {
-                    Log("需要管理员权限：守护进程必须以管理员身份运行（运行 install-task.bat 开机自启）");
+                    Log("需要管理员权限：守护进程必须以管理员身份运行（安装 MSI 或执行 --install 注册开机自启）");
                     return 5;
                 }
 
