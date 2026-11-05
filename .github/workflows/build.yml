@@ -97,8 +97,11 @@ jobs:
           # WiX v7：EULA 接受标记（OSMF 费用仅对年收入 >1 万美元的组织生效，
           # 本项目为非盈利开源项目，接受标记后无额外义务）
           dotnet tool install --tool-path .tools wix --version 7.0.1
-          $ver = (Select-String -Path Product.wxs -Pattern 'Version="([\d.]+)"' | Select-Object -First 1).Matches[0].Groups[1].Value
-          & .tools\wix.exe build -acceptEula wix7 -arch x64 Product.wxs -o "dist/Nvidia-FanCap-$ver-x64.msi"
+          # -CaseSensitive 必须加：否则会匹配到 XML 声明里的 version="1.0"
+          $ver = (Select-String -Path Product.wxs -Pattern 'Version="([\d.]+)"' -CaseSensitive |
+                  Select-Object -First 1).Matches[0].Groups[1].Value
+          & .tools\wix.exe build -acceptEula wix7 -arch x64 -pdbtype none Product.wxs -o "dist/Nvidia-FanCap-$ver-x64.msi"
+          Write-Output "MSI 版本: $ver"
       - name: 打包绿色版 zip
         shell: pwsh
         run: |
@@ -135,6 +138,14 @@ jobs:
           sha256sum Nvidia-FanCap-* >> sums.txt
           CHANGES=$(git log --abbrev=8 --abbrev-commit --pretty=format:" - %s(%h) by %an" -15)
           { echo "## 最近变更:"; echo "$CHANGES"; } > changelog.txt
+      - name: 清理同一标签下的旧资产（避免改版重发时残留过期文件名）
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --json assets -q '.assets[].name' 2>/dev/null |
+          while read -r a; do
+            [ -n "$a" ] && gh release delete-asset "$GITHUB_REF_NAME" "$a" --repo "$GITHUB_REPOSITORY" --yes || true
+          done
       - name: 创建 GitHub Release
         uses: softprops/action-gh-release@v3
         with:
