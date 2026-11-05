@@ -31,10 +31,9 @@ namespace NvidiaFanCap
         private const int POWER_MIN = 50;             // never command an absurdly low limit
         private const int POWER_MAX_FALLBACK = 330;   // only used when the card reports no default limit
 
-        // auto mode tuning - both sensitivities were measured on the blower
-        // 4070 Ti SUPER (fan 4.5 %/C, board power 0.035 C/W)
-        private const double FAN_PER_DEGREE = 4.5;
-        private const double DEG_PER_WATT = 0.035;
+        // auto mode: how much of each anchor correction is applied per update.
+        // The sensitivities themselves are card dependent and live in Settings
+        // (fan_per_degree, deg_per_watt).
         private const double ANCHOR_DAMPING = 0.30;
 
         private static TextWriter logFile;
@@ -156,7 +155,7 @@ namespace NvidiaFanCap
                 // configured power limit so a high limit starts loud enough to stay
                 // out of the driver override zone (the learner will bring it down)
                 double autoAnchor = autoModel != null && autoModel.Anchor > 0 ? autoModel.Anchor : SeedAnchor(cfg, defaultPowerW);
-                if (autoMode) fanCurve = BuildAnchorCurve(cfg.TargetTemp, autoAnchor, FAN_PER_DEGREE);
+                if (autoMode) fanCurve = BuildAnchorCurve(cfg.TargetTemp, autoAnchor, cfg.FanPerDegree);
                 else if (curveMode) { fanCurve = BuildFanCurve(cfg); powerCurve = BuildPowerCurve(cfg); }
                 if (curveMode && fanCurve == null)
                 {
@@ -231,7 +230,7 @@ namespace NvidiaFanCap
                             curveMode = IsCurve(cfg) || autoMode;
                             if (curveMode)
                             {
-                                if (autoMode) fanCurve = BuildAnchorCurve(cfg.TargetTemp, autoAnchor, FAN_PER_DEGREE);
+                                if (autoMode) fanCurve = BuildAnchorCurve(cfg.TargetTemp, autoAnchor, cfg.FanPerDegree);
                                 else { fanCurve = BuildFanCurve(cfg); powerCurve = BuildPowerCurve(cfg); }
                                 if (fanCurve == null || (!autoMode && powerCurve == null))
                                 {
@@ -383,13 +382,13 @@ namespace NvidiaFanCap
                             if (autoModel.TryGetLast(out p0, out f0, out t0) && curveFanOut >= 0 && Math.Abs(maxSpeed - curveFanOut) <= 8)
                             {
                                 double anchorPower = AnchorPower(cfg, defaultPowerW, powerW);
-                                double desired = f0 + (t0 - cfg.TargetTemp) * FAN_PER_DEGREE
-                                                 - (anchorPower - p0) * DEG_PER_WATT * FAN_PER_DEGREE;
+                                double desired = f0 + (t0 - cfg.TargetTemp) * cfg.FanPerDegree
+                                                 - (anchorPower - p0) * cfg.DegPerWatt * cfg.FanPerDegree;
                                 if (autoAnchor < 0) autoAnchor = desired;
                                 else autoAnchor += ANCHOR_DAMPING * (desired - autoAnchor);
                                 if (autoAnchor < 0) autoAnchor = 0; else if (autoAnchor > 100) autoAnchor = 100;
                                 autoModel.Anchor = autoAnchor;
-                                fanCurve = BuildAnchorCurve(cfg.TargetTemp, autoAnchor, FAN_PER_DEGREE);
+                                fanCurve = BuildAnchorCurve(cfg.TargetTemp, autoAnchor, cfg.FanPerDegree);
                                 Log("auto: point T=" + Fmt1(t0) + "C F=" + Fmt1(f0) + "% P=" + Fmt1(p0) + "W -> want " +
                                     Fmt1(desired) + "% at " + cfg.TargetTemp + "C, anchor " + Fmt1(autoAnchor) +
                                     "% (limit " + Fmt1(AnchorPower(cfg, defaultPowerW, powerW)) + "W)");
@@ -822,7 +821,7 @@ namespace NvidiaFanCap
         private static double SeedAnchor(Settings cfg, int defaultPowerW)
         {
             double limit = cfg.PowerLimitW > 0 ? cfg.PowerLimitW : (defaultPowerW > 0 ? defaultPowerW : 310);
-            double anchor = 46 + (limit - 150) * DEG_PER_WATT * FAN_PER_DEGREE;
+            double anchor = 46 + (limit - 150) * cfg.DegPerWatt * cfg.FanPerDegree;
             if (anchor < 30) anchor = 30; else if (anchor > 85) anchor = 85;
             return anchor;
         }
@@ -885,3 +884,5 @@ namespace NvidiaFanCap
         }
     }
 }
+
+

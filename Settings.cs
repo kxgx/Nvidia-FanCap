@@ -105,6 +105,9 @@ namespace NvidiaFanCap
         public int TargetTemp = 78;          // auto mode: temperature the fitted curve aims at
         public double FanRateUp = 2.0;       // max fan increase per tick (percent)
         public double FanRateDown = 1.0;     // max fan decrease per tick (percent)
+        // auto mode calibration (card dependent; defaults are a measured blower)
+        public double FanPerDegree = 4.5;    // fan percent needed per degree C
+        public double DegPerWatt = 0.035;    // steady temperature rise per watt
 
         public static Settings Load(string path)
         {
@@ -148,6 +151,8 @@ namespace NvidiaFanCap
                 case "temp_ema": TempEma = NumDouble(value, TempEma); break;
                 case "fan_rate_up": FanRateUp = NumDouble(value, FanRateUp); break;
                 case "fan_rate_down": FanRateDown = NumDouble(value, FanRateDown); break;
+                case "fan_per_degree": FanPerDegree = NumDouble(value, FanPerDegree); break;
+                case "deg_per_watt": DegPerWatt = NumDouble(value, DegPerWatt); break;
             }
         }
 
@@ -174,6 +179,8 @@ namespace NvidiaFanCap
             TargetTemp = (int)Clamp(TargetTemp, 60, 84);
             FanRateUp = Clamp(FanRateUp, 0.1, 50.0);
             FanRateDown = Clamp(FanRateDown, 0.1, 50.0);
+            FanPerDegree = Clamp(FanPerDegree, 1.0, 15.0);
+            DegPerWatt = Clamp(DegPerWatt, 0.005, 0.150);
         }
 
         private static bool ValidPair(double[] x, double[] y)
@@ -230,6 +237,8 @@ namespace NvidiaFanCap
             sb.AppendLine("curve_fan=" + Curve.Format(CurveFan));
             sb.AppendLine("temp_ema=" + NumOut(TempEma));
             sb.AppendLine("target_temp=" + TargetTemp);
+            sb.AppendLine("fan_per_degree=" + NumOut(FanPerDegree));
+            sb.AppendLine("deg_per_watt=" + NumOut(DegPerWatt));
             sb.AppendLine("fan_rate_up=" + NumOut(FanRateUp));
             sb.AppendLine("fan_rate_down=" + NumOut(FanRateDown));
             sb.AppendLine("power_curve_temp=" + Curve.Format(PowerCurveTemp));
